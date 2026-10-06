@@ -29,14 +29,18 @@ from fayda_mcp.storage.memory import MemoryResultRepository, MemorySessionStore
 
 
 def main() -> None:
-    # 1. Load configuration: Use FaydaConfig.from_env() if configured, or sandbox preset
-    client_id = os.environ.get("FAYDA_CLIENT_ID", "demo_sandbox_client")
-    redirect_uri = os.environ.get("FAYDA_REDIRECT_URI", "http://localhost:8000/auth/fayda/callback")
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
 
-    if os.environ.get("FAYDA_ISSUER_URL") or os.environ.get("FAYDA_ISSUER"):
+    # 1. Load configuration: Use FaydaConfig.from_env() if configured, or sandbox preset
+    if os.environ.get("CLIENT_ID") or os.environ.get("FAYDA_CLIENT_ID"):
         config = FaydaConfig.from_env()
     else:
-        # Defaults to Ethiopian Fayda eSignet sandbox
+        client_id = os.environ.get("FAYDA_CLIENT_ID", "demo_sandbox_client")
+        redirect_uri = os.environ.get("FAYDA_REDIRECT_URI", "http://localhost:8000/auth/fayda/callback")
         config = FaydaConfig.sandbox(
             client_id=client_id,
             redirect_uri=redirect_uri,

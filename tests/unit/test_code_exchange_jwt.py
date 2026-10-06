@@ -175,11 +175,11 @@ async def test_reused_state_fails(default_config):
     await sessions.save_session(state, session_data, ttl_seconds=60)
     await results.save_request("vr_reuse_1", {"status": "pending"}, ttl_seconds=60)
 
-    # 1st call consumes state
-    res1 = await service.complete_verification(code="code_1", state=state)
-    assert res1.status == "verified"
+    # 1st call consumes state (fails after consuming due to missing signing key)
+    with pytest.raises(Exception):
+        await service.complete_verification(code="code_1", state=state)
 
-    # 2nd call with same state fails
+    # 2nd call with same state fails with InvalidStateError
     with pytest.raises(InvalidStateError, match="invalid, expired, or already used"):
         await service.complete_verification(code="code_1", state=state)
 

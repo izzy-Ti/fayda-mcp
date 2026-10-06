@@ -27,15 +27,20 @@ from fayda_mcp.mcp.factory import create_mcp_server
 from fayda_mcp.schemas import VerificationResult
 from fayda_mcp.storage.memory import MemoryResultRepository, MemorySessionStore
 
-# 1. Load host Relying Party configuration
-client_id = os.environ.get("FAYDA_CLIENT_ID", "remote_http_demo_client")
-redirect_uri = os.environ.get(
-    "FAYDA_REDIRECT_URI", "http://localhost:8000/auth/fayda/callback"
-)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-if os.environ.get("FAYDA_ISSUER_URL") or os.environ.get("FAYDA_ISSUER"):
+# 1. Load host Relying Party configuration
+if os.environ.get("CLIENT_ID") or os.environ.get("FAYDA_CLIENT_ID"):
     config = FaydaConfig.from_env()
 else:
+    client_id = os.environ.get("FAYDA_CLIENT_ID", "remote_http_demo_client")
+    redirect_uri = os.environ.get(
+        "FAYDA_REDIRECT_URI", "http://localhost:8000/auth/fayda/callback"
+    )
     config = FaydaConfig.sandbox(
         client_id=client_id,
         redirect_uri=redirect_uri,

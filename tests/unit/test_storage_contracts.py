@@ -11,6 +11,7 @@ from fayda_mcp.storage.memory import (
 from fayda_mcp.storage.protocols import AuditLogger, ResultRepository, SessionStore
 from fayda_mcp import (
     CallerContext,
+    ConfigurationError,
     FaydaConfig,
     FaydaVerificationService,
     InvalidStateError,
@@ -200,11 +201,11 @@ async def test_service_duplicate_callback_state_fails():
     qs = urllib.parse.parse_qs(parsed.query)
     state = qs["state"][0]
 
-    # 2. First callback completion -> succeeds
-    res1 = await service.complete_verification(code="auth_code_1", state=state)
-    assert res1.status == "verified"
+    # 2. First callback consumes state (requires signing key)
+    with pytest.raises(ConfigurationError, match="signing key is required"):
+        await service.complete_verification(code="auth_code_1", state=state)
 
-    # 3. Second callback with the same state -> fails
+    # 3. Second callback with the same state -> fails because state was already consumed
     with pytest.raises(InvalidStateError, match="invalid, expired, or already used"):
         await service.complete_verification(code="auth_code_1", state=state)
 

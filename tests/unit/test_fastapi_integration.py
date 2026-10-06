@@ -94,10 +94,18 @@ class TestFastApiCallbackRouter:
         client.cookies.set("session_id", binding_token)
 
         # 3. Invoke callback on the registered path: /auth/fayda/callback
-        response = client.get(
-            "/auth/fayda/callback",
-            params={"code": "auth_code_xyz", "state": state},
+        from unittest.mock import patch
+        mock_res = VerificationResult(
+            request_id=start_resp.request_id,
+            status="verified",
+            checks={"identity_verified": True},
+            verified_at="2026-10-06T00:00:00Z",
         )
+        with patch.object(service, "complete_verification", return_value=mock_res):
+            response = client.get(
+                "/auth/fayda/callback",
+                params={"code": "auth_code_xyz", "state": state},
+            )
 
         assert response.status_code == 200
         data = response.json()
@@ -189,10 +197,18 @@ class TestFastApiCallbackRouter:
         app.include_router(router)
         client = TestClient(app, follow_redirects=False)
 
-        response = client.get(
-            "/auth/fayda/callback",
-            params={"code": "auth_code", "state": state},
+        from unittest.mock import patch
+        mock_res = VerificationResult(
+            request_id=start_resp.request_id,
+            status="verified",
+            checks={"identity_verified": True},
+            verified_at="2026-10-06T00:00:00Z",
         )
+        with patch.object(service, "complete_verification", return_value=mock_res):
+            response = client.get(
+                "/auth/fayda/callback",
+                params={"code": "auth_code", "state": state},
+            )
         assert response.status_code == 303
         assert "http://host.app/welcome?status=verified" in response.headers["location"]
 

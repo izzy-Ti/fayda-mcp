@@ -69,12 +69,24 @@ class FaydaVerificationService:
         await self._http.aclose()
 
     async def _get_private_key(self) -> Optional[str]:
-        """Resolve client private signing key from KeyProvider or configured file."""
+        """Resolve client private signing key from KeyProvider, config, or configured file."""
         if self.key_provider:
-            return await self.key_provider.get_private_key()
+            key = await self.key_provider.get_private_key()
+            from fayda_mcp.secrets.keys import parse_private_key
+            pem, kid = parse_private_key(key)
+            if kid and not self.config.key_id:
+                self.config.key_id = kid
+            return pem
+        if self.config.signing_key:
+            return self.config.signing_key
         if self.config.signing_key_path:
             from fayda_mcp.secrets.file import FileKeyProvider
-            return await FileKeyProvider(self.config.signing_key_path).get_private_key()
+            from fayda_mcp.secrets.keys import parse_private_key
+            raw = await FileKeyProvider(self.config.signing_key_path).get_private_key()
+            pem, kid = parse_private_key(raw)
+            if kid and not self.config.key_id:
+                self.config.key_id = kid
+            return pem
         return None
 
     async def start_verification(
@@ -263,7 +275,13 @@ class FaydaVerificationService:
         private_key = await self._get_private_key()
         if private_key:
             # Sign client assertion
-            client_assertion = create_client_assertion(config=self.config, private_key=private_key)
+            alg = self.config.allowed_algorithms[0] if self.config.allowed_algorithms else "RS256"
+            client_assertion = create_client_assertion(
+                config=self.config,
+                private_key=private_key,
+                algorithm=alg,
+                key_id=self.config.key_id,
+            )
 
             # Exchange code with original PKCE verifier
             code_verifier = session_data["code_verifier"]
@@ -306,9 +324,9 @@ class FaydaVerificationService:
             normalized = normalize_claims(raw_all_claims)
             evaluated = evaluate_checks(normalized, checks)
         else:
-            # Fallback for environments / tests without provider key
-            simulated_claims = {"sub": f"sub_{request_id[:8]}"}
-            evaluated = evaluate_checks(simulated_claims, checks)
+            raise ConfigurationError(
+                "A Fayda signing key is required for verification."
+            )
 
         # Determine outcome status based on check results
         has_failure = any(v is False for v in evaluated.values())

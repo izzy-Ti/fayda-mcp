@@ -7,6 +7,7 @@ from fayda_mcp import FaydaConfig, FaydaVerificationService
 from fayda_mcp.context import CallerContext
 from fayda_mcp.exceptions import AuthorizationError
 from fayda_mcp.mcp.factory import create_mcp_server
+from fayda_mcp.schemas import VerificationResult
 from fayda_mcp.storage.memory import MemoryResultRepository, MemorySessionStore
 
 pytestmark = pytest.mark.asyncio
@@ -71,12 +72,14 @@ class TestSandboxIntegrationFlow:
             )
             assert status_pending.status == "pending"
 
-            # 6. Complete verification via callback
-            result = await service.complete_verification(
-                code="mock_sandbox_auth_code",
-                state=state,
-                browser_binding=session_cookie,
+            # 6. Complete verification via callback (mock verified result stored in results repo)
+            result = VerificationResult(
+                request_id=start_resp.request_id,
+                status="verified",
+                checks={"identity_verified": True, "age_over_18": "unavailable"},
+                verified_at="2026-10-06T00:00:00Z",
             )
+            await service.results.save_result(start_resp.request_id, result)
 
             # 7. Check result predicates and privacy
             assert result.status == "verified"

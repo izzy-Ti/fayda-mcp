@@ -1,30 +1,39 @@
 [project]
-name = "fayda-mcp-bridge"
+name = "fayda-mcp"
 version = "0.1.0"
-description = "FastAPI and FastMCP bridge for Fayda eSignet identity verification"
+description = "Fayda eSignet identity verification tools for Model Context Protocol (MCP)"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.30.0",
-    "fastmcp>=4.0.0",
     "pydantic>=2.9.0",
     "pydantic-settings>=2.5.0",
-    "redis>=5.0.0",
     "httpx>=0.27.0",
-    "sqlalchemy[asyncio]>=2.0.0",
-    "greenlet>=3.0.0",
-    "psycopg[binary]>=3.2.0",
-    "alembic>=1.13.0",
     "cryptography>=43.0.0",
     "pyjwt>=2.9.0",
-    "python-dotenv>=1.0.0",
+    "fastmcp>=4.0.0",
 ]
 
 [project.optional-dependencies]
+fastapi = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+]
+redis = [
+    "redis>=5.0.0",
+]
+postgres = [
+    "sqlalchemy[asyncio]>=2.0.0",
+    "psycopg[binary]>=3.2.0",
+    "greenlet>=3.0.0",
+]
+all = [
+    "fayda-mcp[fastapi,redis,postgres]",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+    "fayda-mcp[all]",
 ]
 
 [build-system]
@@ -32,4 +41,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["src/fayda_mcp"]

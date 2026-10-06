@@ -1,46 +1,46 @@
-# Fayda MCP Bridge
+# Fayda MCP Python Library (`fayda-mcp`)
 
-A high-assurance identity bridge connecting Ethiopian National ID (Fayda eSignet) with AI agents over the Model Context Protocol (MCP).
+Importable Python package exposing standardized Model Context Protocol (MCP) tools and reusable verification services for Ethiopian National ID (Fayda eSignet).
 
-## Overview
+## Installation
 
-- **Stack**: Python 3.12+, FastAPI, standalone FastMCP, Neon PostgreSQL, Redis, Fayda eSignet OIDC.
-- **Protocol**: Streamable HTTP MCP exposed at `/mcp`.
-- **Security Boundaries**: Agents call standardized verification tools with OAuth-scoped tokens. Citizens authenticate and consent directly via Fayda eSignet. Private keys and citizen raw identifiers are strictly isolated from agents.
-
-## Quickstart
-
-### Prerequisites
-- Python 3.12+ and `uv`
-- Docker and Docker Compose (for local Redis & containerization)
-
-### Local Development
-
-1. Setup environment:
 ```bash
-cp .env.example .env
+# Core package (standalone FastMCP + Fayda OIDC verification)
+pip install fayda-mcp
+
+# With optional adapters (FastAPI, Redis, PostgreSQL/Neon)
+pip install "fayda-mcp[fastapi,redis,postgres]"
 ```
 
-2. Start local Redis:
-```bash
-docker compose up -d redis
+## Quick Start
+
+```python
+from fayda_mcp import FaydaConfig, FaydaVerificationService
+from fayda_mcp.storage.memory import MemorySessionStore, MemoryResultRepository
+
+config = FaydaConfig(
+    client_id="my-client-id",
+    redirect_uri="https://my-app.example/auth/callback",
+    issuer="https://esignet.fayda.et",
+    authorization_endpoint="https://esignet.fayda.et/authorize",
+    token_endpoint="https://esignet.fayda.et/oauth/token",
+    userinfo_endpoint="https://esignet.fayda.et/oidc/userinfo",
+    jwks_uri="https://esignet.fayda.et/jwks.json",
+)
+
+service = FaydaVerificationService(
+    config=config,
+    sessions=MemorySessionStore(),
+    results=MemoryResultRepository(),
+)
 ```
 
-3. Install dependencies and run the server:
-```bash
-uv sync
-uvicorn app.main:app --reload --port 8000
-```
+## Running MCP Tools
 
-4. Verify endpoints:
-- Liveness: `GET http://localhost:8000/health/live`
-- Readiness: `GET http://localhost:8000/health/ready`
-- MCP Streamable endpoint: `http://localhost:8000/mcp`
-- OAuth Resource Metadata: `GET http://localhost:8000/.well-known/oauth-protected-resource`
+```python
+from fayda_mcp.mcp.factory import create_mcp_server
 
-### Docker Compose
-
-Run the complete local stack:
-```bash
-docker compose up --build
+# Build a standalone FastMCP server wired with verification tools
+server = create_mcp_server(service=service)
+server.run()
 ```

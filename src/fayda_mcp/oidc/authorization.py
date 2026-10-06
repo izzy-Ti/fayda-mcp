@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import json
 import secrets
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
@@ -14,8 +15,12 @@ def generate_secure_token(nbytes: int = 32) -> str:
 
 
 def generate_pkce_pair() -> tuple[str, str]:
-    """Generate PKCE code_verifier and code_challenge (S256)."""
-    verifier = secrets.token_urlsafe(48)
+    """Generate PKCE code_verifier and code_challenge (S256) per RFC 7636.
+
+    Returns:
+        tuple[code_verifier, code_challenge]
+    """
+    verifier = secrets.token_urlsafe(64)
     digest = hashlib.sha256(verifier.encode("utf-8")).digest()
     challenge = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
     return verifier, challenge
@@ -35,7 +40,7 @@ def build_authorization_url(
     if "openid" not in scopes:
         scopes = ["openid"] + scopes
 
-    params = {
+    params: Dict[str, str] = {
         "response_type": "code",
         "client_id": config.client_id,
         "redirect_uri": config.redirect_uri,
@@ -45,6 +50,9 @@ def build_authorization_url(
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
     }
+
+    if claims:
+        params["claims"] = json.dumps(claims)
 
     query_str = urlencode(params)
     sep = "&" if "?" in config.authorization_endpoint else "?"

@@ -97,12 +97,17 @@ class FaydaVerificationService:
         now = datetime.datetime.now(datetime.timezone.utc)
         expires_at = (now + datetime.timedelta(seconds=self.config.session_ttl_seconds)).isoformat()
 
+        # Resolve required scopes and claims for requested checks
+        scopes, claims_param = self.policy.resolve_scopes_and_claims(checks)
+
         # Build Fayda eSignet authorization URL
         auth_url = build_authorization_url(
             config=self.config,
             state=state,
             nonce=nonce,
             code_challenge=code_challenge,
+            scopes=scopes,
+            claims=claims_param,
         )
 
         # Store short-lived session in SessionStore

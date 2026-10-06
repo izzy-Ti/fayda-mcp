@@ -298,11 +298,20 @@ class FaydaVerificationService:
             simulated_claims = {"sub": f"sub_{request_id[:8]}"}
             evaluated = evaluate_checks(simulated_claims, checks)
 
+        # Determine outcome status based on check results
+        has_failure = any(v is False for v in evaluated.values())
+        if has_failure:
+            outcome_status = "rejected"
+        elif any(v is True for v in evaluated.values()):
+            outcome_status = "verified"
+        else:
+            outcome_status = "failed"
+
         now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
         result = VerificationResult(
             request_id=request_id,
-            status="verified",
-            checks={k: bool(v) for k, v in evaluated.items() if v is not None},
+            status=outcome_status,
+            checks=evaluated,
             verified_at=now_str,
             evidence_ref=f"ev_{request_id}",
             policy_version=self.policy.version,

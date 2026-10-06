@@ -1,6 +1,6 @@
 """Storage protocols for OIDC sessions, verification requests, and results."""
 
-from typing import Any, Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 from fayda_mcp.schemas import VerificationResult
 
 
@@ -13,11 +13,19 @@ class SessionStore(Protocol):
         ...
 
     async def consume_session(self, state: str) -> Optional[Dict[str, Any]]:
-        """Atomically consume and delete session data once. Returns None if already consumed/expired."""
+        """Atomically consume and delete session data once.
+
+        Returns session data on first call. Returns None if already consumed,
+        nonexistent, or expired.
+        """
         ...
 
     async def get_session(self, state: str) -> Optional[Dict[str, Any]]:
         """Read session data without consuming (for status inspection)."""
+        ...
+
+    async def delete_session(self, state: str) -> bool:
+        """Explicitly delete a session. Returns True if deleted."""
         ...
 
 
@@ -30,11 +38,28 @@ class ResultRepository(Protocol):
         ...
 
     async def get_request(self, request_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve verification request record by ID."""
+        """Retrieve verification request record by ID. Returns None if expired or not found."""
+        ...
+
+    async def find_by_idempotency_key(
+        self, tenant_id: str, principal_id: str, idempotency_key: str
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieve existing request matching tenant, principal, and caller idempotency key."""
         ...
 
     async def update_status(self, request_id: str, status: str) -> None:
-        """Update request status (pending, processing, verified, rejected, etc.)."""
+        """Update request status (pending, processing, cancelled, etc.)."""
+        ...
+
+    async def finalize_result(
+        self, request_id: str, result: VerificationResult, ttl_seconds: int
+    ) -> bool:
+        """Atomically finalize verification outcome.
+
+        Returns True if this invocation successfully transitions and finalizes the
+        request; returns False if the request has already been finalized.
+        Prevents concurrent callbacks from finalizing twice.
+        """
         ...
 
     async def save_result(self, request_id: str, result: VerificationResult, ttl_seconds: int) -> None:
@@ -52,4 +77,8 @@ class AuditLogger(Protocol):
 
     async def record_event(self, event_type: str, safe_metadata: Dict[str, Any]) -> None:
         """Append safe audit log record."""
+        ...
+
+    async def get_events(self, request_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retrieve recorded audit events, optionally filtered by request_id."""
         ...

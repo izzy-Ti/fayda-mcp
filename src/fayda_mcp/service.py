@@ -68,9 +68,25 @@ class FaydaVerificationService:
         application_user_ref: str,
         idempotency_key: str,
     ) -> StartVerificationResponse:
-        """Start a verification flow, creating state, PKCE verifier, and authorization link."""
+        """Start a verification flow, creating state, PKCE verifier, and authorization link.
+
+        Idempotent: repeating the call with identical idempotency_key returns existing request.
+        """
         # Validate against policy
         self.policy.validate_request(purpose=purpose, checks=checks)
+
+        # Idempotency check
+        existing = await self.results.find_by_idempotency_key(
+            tenant_id=context.tenant_id,
+            principal_id=context.principal_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing:
+            return StartVerificationResponse(
+                request_id=existing["request_id"],
+                authorization_url=existing.get("authorization_url", ""),
+                expires_at=existing["expires_at"],
+            )
 
         # Generate cryptographic state, nonce, and PKCE challenge
         state = generate_secure_token(32)
@@ -115,6 +131,7 @@ class FaydaVerificationService:
             "status": "pending",
             "expires_at": expires_at,
             "idempotency_key": idempotency_key,
+            "authorization_url": auth_url,
         }
         await self.results.save_request(request_id, request_record, ttl_seconds=self.config.result_ttl_seconds)
 
@@ -164,7 +181,7 @@ class FaydaVerificationService:
 
         result = await self.results.get_result(request_id)
         if not result:
-            # If not yet verified, return pending status
+            # If not yet verified, return status
             return VerificationResult(
                 request_id=request_id,
                 status=record.get("status", "pending"),
@@ -204,7 +221,7 @@ class FaydaVerificationService:
         checks = session_data.get("checks", ["identity_verified"])
 
         # Exchange code and validate tokens (full implementation in tasks B2/C2)
-        # For foundation, compute deterministic result from session checks:
+        # Compute deterministic result from session checks:
         simulated_claims = {"sub": f"sub_{request_id[:8]}"}
         evaluated = evaluate_checks(simulated_claims, checks)
 
@@ -218,7 +235,14 @@ class FaydaVerificationService:
             policy_version=self.policy.version,
         )
 
-        await self.results.save_result(request_id, result, ttl_seconds=self.config.result_ttl_seconds)
+        # Atomically finalize to ensure concurrent callbacks cannot finalize twice
+        finalized = await self.results.finalize_result(
+            request_id=request_id,
+            result=result,
+            ttl_seconds=self.config.result_ttl_seconds,
+        )
+        if not finalized:
+            raise InvalidStateError("Verification request has already been finalized")
 
         if self.audit:
             await self.audit.record_event(

@@ -42,3 +42,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fayda_mcp"]
+
+[tool.pyright]
+extraPaths = ["src"]
+include = ["src", "examples", "tests"]
+venvPath = "."
+venv = ".venv"

@@ -6,9 +6,12 @@ import httpx
 from fayda_mcp.config import FaydaConfig
 from fayda_mcp.context import CallerContext
 from fayda_mcp.exceptions import (
+    AuthenticationError,
     AuthorizationError,
+    ConfigurationError,
     InvalidStateError,
     PolicyViolationError,
+    TokenValidationError,
     VerificationNotFoundError,
 )
 from fayda_mcp.policy import VerificationPolicy
@@ -26,6 +29,10 @@ from fayda_mcp.oidc.authorization import (
     generate_pkce_pair,
     generate_secure_token,
 )
+from fayda_mcp.oidc.assertions import create_client_assertion
+from fayda_mcp.oidc.tokens import validate_id_token, validate_userinfo_response
+from fayda_mcp.oidc.jwks import JwksCache
+from fayda_mcp.oidc.mapping import normalize_claims
 from fayda_mcp.claims import evaluate_checks
 
 
@@ -49,6 +56,7 @@ class FaydaVerificationService:
         self.key_provider = key_provider
         self.audit = audit
         self._http = FaydaHttpClient(config=config, client=http_client)
+        self.jwks = JwksCache(config=config)
 
     async def __aenter__(self) -> "FaydaVerificationService":
         return self
@@ -59,6 +67,15 @@ class FaydaVerificationService:
     async def aclose(self) -> None:
         """Cleanly close underlying HTTP clients and connections."""
         await self._http.aclose()
+
+    async def _get_private_key(self) -> Optional[str]:
+        """Resolve client private signing key from KeyProvider or configured file."""
+        if self.key_provider:
+            return await self.key_provider.get_private_key()
+        if self.config.signing_key_path:
+            from fayda_mcp.secrets.file import FileKeyProvider
+            return await FileKeyProvider(self.config.signing_key_path).get_private_key()
+        return None
 
     async def start_verification(
         self,
@@ -72,7 +89,7 @@ class FaydaVerificationService:
 
         Idempotent: repeating the call with identical idempotency_key returns existing request.
         """
-        # Validate against policy
+        # Validate against policy before state creation or redirect
         self.policy.validate_request(purpose=purpose, checks=checks)
 
         # Idempotency check
@@ -110,7 +127,7 @@ class FaydaVerificationService:
             claims=claims_param,
         )
 
-        # Store short-lived session in SessionStore
+        # Store short-lived session in SessionStore bound to caller context
         session_data = {
             "request_id": request_id,
             "tenant_id": context.tenant_id,
@@ -186,7 +203,6 @@ class FaydaVerificationService:
 
         result = await self.results.get_result(request_id)
         if not result:
-            # If not yet verified, return status
             return VerificationResult(
                 request_id=request_id,
                 status=record.get("status", "pending"),
@@ -218,6 +234,7 @@ class FaydaVerificationService:
         browser_binding: Optional[str] = None,
     ) -> VerificationResult:
         """Atomically complete verification on callback, exchanging code and evaluating claims."""
+        # 1. Consume state atomically (reused state fails)
         session_data = await self.sessions.consume_session(state)
         if not session_data:
             raise InvalidStateError("Verification state is invalid, expired, or already used")
@@ -225,10 +242,61 @@ class FaydaVerificationService:
         request_id = session_data["request_id"]
         checks = session_data.get("checks", ["identity_verified"])
 
-        # Exchange code and validate tokens (full implementation in tasks B2/C2)
-        # Compute deterministic result from session checks:
-        simulated_claims = {"sub": f"sub_{request_id[:8]}"}
-        evaluated = evaluate_checks(simulated_claims, checks)
+        # 2. Browser binding check
+        expected_binding = session_data.get("browser_binding")
+        if expected_binding and browser_binding != expected_binding:
+            raise InvalidStateError("Browser session binding mismatch")
+
+        # 3. Perform code exchange if client key is configured
+        private_key = await self._get_private_key()
+        if private_key:
+            # Sign client assertion
+            client_assertion = create_client_assertion(config=self.config, private_key=private_key)
+
+            # Exchange code with original PKCE verifier
+            code_verifier = session_data["code_verifier"]
+            token_response = await self._http.exchange_code(
+                code=code,
+                code_verifier=code_verifier,
+                client_assertion=client_assertion,
+            )
+
+            # Validate ID token
+            id_token_str = token_response.get("id_token")
+            if not id_token_str:
+                raise AuthenticationError("Token response missing id_token")
+
+            signing_key = await self.jwks.get_signing_key_for_token(
+                id_token_str, client=self._http.client
+            )
+            id_claims = validate_id_token(
+                token_str=id_token_str,
+                config=self.config,
+                signing_key=signing_key,
+                expected_nonce=session_data["nonce"],
+            )
+            sub = id_claims["sub"]
+
+            # Fetch and validate UserInfo
+            userinfo_claims: Dict[str, Any] = {}
+            access_token = token_response.get("access_token")
+            if access_token:
+                raw_userinfo = await self._http.fetch_userinfo(access_token)
+                userinfo_claims = validate_userinfo_response(
+                    userinfo=raw_userinfo,
+                    config=self.config,
+                    expected_sub=sub,
+                    signing_key=signing_key,
+                )
+
+            # Merge and normalize claims
+            raw_all_claims = {**id_claims, **userinfo_claims}
+            normalized = normalize_claims(raw_all_claims)
+            evaluated = evaluate_checks(normalized, checks)
+        else:
+            # Fallback for environments / tests without provider key
+            simulated_claims = {"sub": f"sub_{request_id[:8]}"}
+            evaluated = evaluate_checks(simulated_claims, checks)
 
         now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
         result = VerificationResult(

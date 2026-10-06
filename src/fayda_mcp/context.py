@@ -13,8 +13,8 @@ class CallerContext(BaseModel):
     scopes: List[str] = Field(
         default_factory=lambda: ["verification:create", "verification:read", "verification:cancel"]
     )
-    application_user_ref: Optional[str] = Field(None, description="Host application user identifier")
-    browser_binding: Optional[str] = Field(None, description="Optional cookie or session token binding")
+    application_user_ref: Optional[str] = Field(default=None, description="Host application user identifier")
+    browser_binding: Optional[str] = Field(default=None, description="Optional cookie or session token binding")
 
 
 @runtime_checkable
@@ -40,15 +40,8 @@ class SimpleCallerAdapter:
 
     def __init__(
         self,
-        context_resolver: Optional[
-            Union[
-                CallerContext,
-                Callable[..., Union[CallerContext, Awaitable[CallerContext]]],
-            ]
-        ] = None,
-        authorizer: Optional[
-            Callable[[CallerContext, str, Optional[str]], Union[bool, Awaitable[bool]]]
-        ] = None,
+        context_resolver: Optional[Any] = None,
+        authorizer: Optional[Any] = None,
         enforce_scopes: bool = True,
     ) -> None:
         self._resolver = context_resolver

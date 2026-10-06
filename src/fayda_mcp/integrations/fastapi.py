@@ -3,20 +3,24 @@
 Requires 'fastapi' extra installed: pip install 'fayda-mcp[fastapi]'
 """
 
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 import inspect
-from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, Optional, Union
 import urllib.parse
 
-try:
-    from fastapi import APIRouter, FastAPI, Request, status
+if TYPE_CHECKING:
+    from fastapi import APIRouter, FastAPI, Request
     from fastapi.responses import JSONResponse, RedirectResponse
-except ImportError:
-    APIRouter = None  # type: ignore
-    FastAPI = None  # type: ignore
-    Request = None  # type: ignore
-    JSONResponse = None  # type: ignore
-    RedirectResponse = None  # type: ignore
+else:
+    try:
+        from fastapi import APIRouter, FastAPI, Request
+        from fastapi.responses import JSONResponse, RedirectResponse
+    except ImportError:
+        APIRouter = None
+        FastAPI = None
+        Request = Any
+        JSONResponse = None
+        RedirectResponse = None
 
 from fayda_mcp.exceptions import (
     AuthenticationError,
@@ -51,10 +55,12 @@ def create_callback_router(
         on_success: Optional hook executed on successful verification.
         on_error: Optional hook executed on verification failure.
     """
-    if APIRouter is None:
+    if APIRouter is None or JSONResponse is None:
         raise ImportError(
             "FastAPI extra is not installed. Install with: pip install 'fayda-mcp[fastapi]'"
         )
+
+    json_response_cls = JSONResponse
 
     if session_binding_hook is None or not callable(session_binding_hook):
         raise ConfigurationError(
@@ -87,8 +93,8 @@ def create_callback_router(
             if on_error:
                 res = on_error(request, exc)
                 return await res if inspect.isawaitable(res) else res
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
+            return json_response_cls(
+                status_code=400,
                 content={"error": error, "description": error_description},
             )
 
@@ -100,8 +106,8 @@ def create_callback_router(
             if on_error:
                 res = on_error(request, hook_err)
                 return await res if inspect.isawaitable(res) else res
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
+            return json_response_cls(
+                status_code=400,
                 content={"error": "session_binding_failed", "message": str(hook_err)},
             )
 
@@ -121,13 +127,13 @@ def create_callback_router(
                 res = on_error(request, exc)
                 return await res if inspect.isawaitable(res) else res
 
-            status_code = status.HTTP_400_BAD_REQUEST
+            status_code = 400
             if isinstance(exc, (InvalidStateError, StateConsumedError)):
-                status_code = status.HTTP_409_CONFLICT
+                status_code = 409
             elif isinstance(exc, (AuthenticationError, TokenValidationError)):
-                status_code = status.HTTP_401_UNAUTHORIZED
+                status_code = 401
 
-            return JSONResponse(
+            return json_response_cls(
                 status_code=status_code,
                 content={"error": type(exc).__name__, "message": str(exc)},
             )
@@ -139,14 +145,14 @@ def create_combined_lifespan(
     service: Optional[FaydaVerificationService] = None,
     mcp_server: Optional[Any] = None,
     host_lifespan: Optional[Callable[[Any], Any]] = None,
-) -> Callable[[Any], AsyncIterator[None]]:
+) -> Callable[[Any], AbstractAsyncContextManager[None]]:
     """Build an async combined lifespan context manager for FastAPI and FastMCP.
 
     Ensures service resources, MCP server lifespans, and host lifespans run cleanly.
     """
 
     @asynccontextmanager
-    async def combined_lifespan(app: Any) -> AsyncIterator[None]:
+    async def combined_lifespan(app: Any) -> AsyncGenerator[None, None]:
         async with AsyncExitStack() as stack:
             # 1. Manage service lifecycle if provided
             if service is not None:

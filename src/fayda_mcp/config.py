@@ -1,7 +1,7 @@
 """Validated configuration for Fayda eSignet integration."""
 
 import os
-from typing import List, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -62,7 +62,7 @@ class FaydaConfig(BaseModel):
         client_id: str,
         redirect_uri: str,
         signing_key_path: Optional[str] = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> "FaydaConfig":
         """Convenience preset helper pre-populating Ethiopian Fayda eSignet sandbox endpoints."""
         return cls(

@@ -60,10 +60,10 @@ class VerificationResult(BaseModel):
         default_factory=dict,
         description="Outcomes of evaluated checks: True, False, or 'unavailable'",
     )
-    verified_at: Optional[str] = Field(None, description="ISO 8601 timestamp when verification completed")
-    expires_at: Optional[str] = Field(None, description="ISO 8601 timestamp when result expires")
-    evidence_ref: Optional[str] = Field(None, description="Opaque reference to safe audit log record")
-    policy_version: Optional[str] = Field(None, description="Evaluated policy version")
+    verified_at: Optional[str] = Field(default=None, description="ISO 8601 timestamp when verification completed")
+    expires_at: Optional[str] = Field(default=None, description="ISO 8601 timestamp when result expires")
+    evidence_ref: Optional[str] = Field(default=None, description="Opaque reference to safe audit log record")
+    policy_version: Optional[str] = Field(default=None, description="Evaluated policy version")
 
 
 class CancelVerificationResponse(BaseModel):

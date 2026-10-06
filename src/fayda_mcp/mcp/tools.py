@@ -1,7 +1,12 @@
 """Thin typed FastMCP tool handlers."""
 
 from typing import Any, Callable, List, Optional
-from fayda_mcp.context import CallerContext
+from fayda_mcp.context import (
+    CallerAuthorizationAdapter,
+    CallerContext,
+    SimpleCallerAdapter,
+)
+from fayda_mcp.exceptions import AuthorizationError
 from fayda_mcp.schemas import (
     CancelVerificationResponse,
     StartVerificationResponse,
@@ -14,14 +19,28 @@ from fayda_mcp.service import FaydaVerificationService
 def register_tools(
     server: Any,
     service: FaydaVerificationService,
+    caller_adapter: Optional[Any] = None,
     get_context: Optional[Callable[[], CallerContext]] = None,
 ) -> None:
-    """Register explicit FastMCP verification tools onto a FastMCP server."""
+    """Register explicit FastMCP verification tools onto a FastMCP server.
 
-    def _resolve_context() -> CallerContext:
-        if get_context:
-            return get_context()
-        return CallerContext()
+    Args:
+        server: FastMCP server instance.
+        service: Initialized FaydaVerificationService.
+        caller_adapter: Host-provided CallerAuthorizationAdapter or resolver.
+        get_context: Legacy callable callback to resolve caller context.
+    """
+    if caller_adapter is not None:
+        if isinstance(caller_adapter, CallerAuthorizationAdapter):
+            adapter: CallerAuthorizationAdapter = caller_adapter
+        elif callable(caller_adapter):
+            adapter = SimpleCallerAdapter(context_resolver=caller_adapter)
+        else:
+            adapter = SimpleCallerAdapter()
+    elif get_context is not None:
+        adapter = SimpleCallerAdapter(context_resolver=get_context)
+    else:
+        adapter = SimpleCallerAdapter()
 
     @server.tool()
     async def start_verification(
@@ -38,7 +57,16 @@ def register_tools(
             application_user_ref: Opaque host application reference for the user.
             idempotency_key: Unique caller key preventing duplicate starts.
         """
-        ctx = _resolve_context()
+        ctx = await adapter.resolve_context(
+            "start_verification",
+            purpose=purpose,
+            checks=checks,
+            application_user_ref=application_user_ref,
+        )
+        allowed = await adapter.authorize(ctx, "verification:create", None)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:create'")
+
         return await service.start_verification(
             context=ctx,
             purpose=purpose,
@@ -54,7 +82,11 @@ def register_tools(
         Args:
             request_id: Unique verification request identifier.
         """
-        ctx = _resolve_context()
+        ctx = await adapter.resolve_context("get_verification_status", request_id=request_id)
+        allowed = await adapter.authorize(ctx, "verification:read", request_id)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:read'")
+
         return await service.get_verification_status(context=ctx, request_id=request_id)
 
     @server.tool()
@@ -64,7 +96,11 @@ def register_tools(
         Args:
             request_id: Unique verification request identifier.
         """
-        ctx = _resolve_context()
+        ctx = await adapter.resolve_context("get_verification_result", request_id=request_id)
+        allowed = await adapter.authorize(ctx, "verification:read", request_id)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:read'")
+
         return await service.get_verification_result(context=ctx, request_id=request_id)
 
     @server.tool()
@@ -74,5 +110,9 @@ def register_tools(
         Args:
             request_id: Unique verification request identifier.
         """
-        ctx = _resolve_context()
+        ctx = await adapter.resolve_context("cancel_verification", request_id=request_id)
+        allowed = await adapter.authorize(ctx, "verification:cancel", request_id)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:cancel'")
+
         return await service.cancel_verification(context=ctx, request_id=request_id)

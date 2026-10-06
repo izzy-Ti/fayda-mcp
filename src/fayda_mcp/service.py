@@ -169,6 +169,22 @@ class FaydaVerificationService:
             expires_at=expires_at,
         )
 
+    def _authorize_caller(self, record: Dict[str, Any], context: CallerContext) -> None:
+        """Enforce tenant and caller principal isolation."""
+        if record.get("tenant_id") != context.tenant_id:
+            raise AuthorizationError("Access to verification request denied: tenant mismatch")
+
+        record_principal = record.get("principal_id")
+        if (
+            record_principal
+            and record_principal != "anonymous"
+            and context.principal_id != "anonymous"
+            and record_principal != context.principal_id
+            and "verification:admin" not in context.scopes
+            and "*" not in context.scopes
+        ):
+            raise AuthorizationError("Access to verification request denied: caller principal mismatch")
+
     async def get_verification_status(
         self,
         context: CallerContext,
@@ -179,9 +195,7 @@ class FaydaVerificationService:
         if not record:
             raise VerificationNotFoundError(f"Verification request '{request_id}' not found")
 
-        # Enforce tenant/caller boundary
-        if record.get("tenant_id") != context.tenant_id:
-            raise AuthorizationError("Access to verification request denied")
+        self._authorize_caller(record, context)
 
         return VerificationStatusResponse(
             request_id=request_id,
@@ -198,8 +212,7 @@ class FaydaVerificationService:
         if not record:
             raise VerificationNotFoundError(f"Verification request '{request_id}' not found")
 
-        if record.get("tenant_id") != context.tenant_id:
-            raise AuthorizationError("Access to verification request denied")
+        self._authorize_caller(record, context)
 
         result = await self.results.get_result(request_id)
         if not result:
@@ -221,8 +234,7 @@ class FaydaVerificationService:
         if not record:
             raise VerificationNotFoundError(f"Verification request '{request_id}' not found")
 
-        if record.get("tenant_id") != context.tenant_id:
-            raise AuthorizationError("Access to verification request denied")
+        self._authorize_caller(record, context)
 
         await self.results.update_status(request_id, "cancelled")
         return CancelVerificationResponse(request_id=request_id, status="cancelled")

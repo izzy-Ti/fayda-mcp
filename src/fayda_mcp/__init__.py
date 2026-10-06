@@ -5,7 +5,11 @@ identity-verification services for Ethiopian National ID (Fayda eSignet).
 """
 
 from fayda_mcp.config import FaydaConfig
-from fayda_mcp.context import CallerContext
+from fayda_mcp.context import (
+    CallerAuthorizationAdapter,
+    CallerContext,
+    SimpleCallerAdapter,
+)
 from fayda_mcp.exceptions import (
     AuthenticationError,
     AuthorizationError,
@@ -35,6 +39,8 @@ __all__ = [
     "__version__",
     "FaydaConfig",
     "CallerContext",
+    "CallerAuthorizationAdapter",
+    "SimpleCallerAdapter",
     "FaydaMCPError",
     "ConfigurationError",
     "AuthenticationError",

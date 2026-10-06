@@ -40,8 +40,40 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+    ".env*",
+    "*.pem",
+    "*.key",
+    "*.crt",
+    "*.pfx",
+    "*.p12",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
+    "*.secret",
+    ".git*",
+    ".pytest_cache*",
+    "uv.lock",
+    "*venv*",
+    "scratch*",
+    "dist*",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/fayda_mcp"]
+exclude = [
+    ".env*",
+    "*.pem",
+    "*.key",
+    "*.crt",
+    "*.pfx",
+    "*.p12",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
+    "*.secret",
+]
 
 [tool.pyright]
 extraPaths = ["src"]

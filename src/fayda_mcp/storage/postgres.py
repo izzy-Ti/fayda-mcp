@@ -62,7 +62,11 @@ class PostgresResultRepository:
         table_prefix: str = "fayda_",
         **engine_kwargs: Any,
     ) -> "PostgresResultRepository":
-        """Create a PostgresResultRepository instance from a database connection URL."""
+        """Create a PostgresResultRepository instance from a database connection URL.
+
+        Enforces TLS for remote Neon/Postgres endpoints and configures small process pool
+        connection defaults optimized for PgBouncer / serverless environments.
+        """
         if create_async_engine is None or async_sessionmaker is None:
             raise ImportError(
                 "Postgres extra is not installed. Install with: pip install 'fayda-mcp[postgres]'"
@@ -73,7 +77,29 @@ class PostgresResultRepository:
         elif database_url.startswith("postgres://"):
             database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
 
-        engine = create_async_engine(database_url, **engine_kwargs)
+        # Enforce TLS for remote connections if not explicitly specified
+        is_remote_postgres = (
+            "postgresql" in database_url or "neon.tech" in database_url
+        ) and "localhost" not in database_url and "127.0.0.1" not in database_url
+        if is_remote_postgres and "sslmode=" not in database_url and "ssl=" not in database_url:
+            sep = "&" if "?" in database_url else "?"
+            database_url = f"{database_url}{sep}sslmode=require"
+
+        # Tuned small process pool defaults for pooled Neon / PgBouncer
+        configured_kwargs: Dict[str, Any] = {}
+        if "sqlite" not in database_url:
+            configured_kwargs.update({
+                "pool_size": 5,
+                "max_overflow": 10,
+                "pool_recycle": 300,
+                "pool_pre_ping": True,
+            })
+        else:
+            configured_kwargs.update({"pool_pre_ping": True})
+
+        configured_kwargs.update(engine_kwargs)
+
+        engine = create_async_engine(database_url, **configured_kwargs)
         factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
         repo = cls(session_factory=factory, engine=engine, table_prefix=table_prefix)
         repo._owned_engine = True
@@ -419,7 +445,9 @@ class PostgresResultRepository:
             status = :status,
             checks = :checks,
             verified_at = :verified_at,
-            result_expires_at = :result_expires_at
+            result_expires_at = :result_expires_at,
+            evidence_ref = :evidence_ref,
+            policy_version = :policy_version
         """
 
         async with self._lock:
@@ -437,8 +465,8 @@ class PostgresResultRepository:
                         "checks": checks_json,
                         "verified_at": result.verified_at,
                         "result_expires_at": result_expires_at,
-                        "evidence_ref": None,
-                        "policy_version": "v1",
+                        "evidence_ref": result.evidence_ref,
+                        "policy_version": result.policy_version or "v1",
                     }
                     await session.execute(_sql_text(sql_insert_result), params_insert)
 
@@ -497,7 +525,9 @@ class PostgresResultRepository:
             status = :status,
             checks = :checks,
             verified_at = :verified_at,
-            result_expires_at = :result_expires_at
+            result_expires_at = :result_expires_at,
+            evidence_ref = :evidence_ref,
+            policy_version = :policy_version
         """
 
         async with self.session_factory() as session:
@@ -511,15 +541,15 @@ class PostgresResultRepository:
                     "checks": checks_json,
                     "verified_at": result.verified_at,
                     "result_expires_at": result_expires_at,
-                    "evidence_ref": None,
-                    "policy_version": "v1",
+                    "evidence_ref": result.evidence_ref,
+                    "policy_version": result.policy_version or "v1",
                 }
                 await session.execute(_sql_text(sql_upsert_res), params)
 
     async def get_result(self, request_id: str) -> Optional[VerificationResult]:
         """Retrieve final evaluated verification result."""
         sql = f"""
-        SELECT request_id, status, checks, verified_at, result_expires_at
+        SELECT request_id, status, checks, verified_at, result_expires_at, evidence_ref, policy_version
         FROM {self.results_table}
         WHERE request_id = :request_id
         """
@@ -544,6 +574,8 @@ class PostgresResultRepository:
                 status=row["status"],
                 checks=checks,
                 verified_at=row["verified_at"],
+                evidence_ref=row.get("evidence_ref"),
+                policy_version=row.get("policy_version"),
             )
 
     async def cleanup(self) -> int:
@@ -634,6 +666,10 @@ class PostgresAuditLogger:
                     metadata = {}
                 events.append(
                     {
+                        "event_id": row["event_id"],
+                        "request_id": row["request_id"],
+                        "tenant_id": row["tenant_id"],
+                        "principal_id": row["principal_id"],
                         "event_type": row["event_type"],
                         "metadata": metadata,
                         "timestamp": row["occurred_at"],

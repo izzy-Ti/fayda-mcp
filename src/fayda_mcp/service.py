@@ -3,6 +3,7 @@
 import datetime
 import hashlib
 import json
+import time
 from typing import Any, Dict, List, Optional
 import httpx
 from fayda_mcp.config import FaydaConfig
@@ -278,9 +279,24 @@ class FaydaVerificationService:
 
         self._authorize_caller(record, context)
 
+        status = record.get("status", "pending")
+        if status == "pending":
+            exp_val = record.get("session_expires_at") or record.get("expires_at")
+            if exp_val is not None:
+                try:
+                    exp_ts = float(exp_val)
+                except (ValueError, TypeError):
+                    try:
+                        from datetime import datetime
+                        exp_ts = datetime.fromisoformat(str(exp_val)).timestamp()
+                    except Exception:
+                        exp_ts = 0.0
+                if exp_ts > 0 and time.time() >= exp_ts:
+                    status = "expired"
+
         return VerificationStatusResponse(
             request_id=request_id,
-            status=record.get("status", "pending"),
+            status=status,
         )
 
     async def get_verification_result(
@@ -297,6 +313,8 @@ class FaydaVerificationService:
 
         result = await self.results.get_result(request_id)
         if not result:
+            if record.get("status") in ("verified", "rejected", "failed"):
+                raise VerificationNotFoundError(f"Verification result for '{request_id}' has expired")
             return VerificationResult(
                 request_id=request_id,
                 status=record.get("status", "pending"),

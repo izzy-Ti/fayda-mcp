@@ -10,6 +10,8 @@ from fayda_mcp.storage.protocols import (
     SessionStore,
 )
 
+from fayda_mcp.storage.retention import RetentionCleanupManager
+
 __all__ = [
     "AuditLogger",
     "MemoryAuditLogger",
@@ -17,6 +19,7 @@ __all__ = [
     "MemorySessionStore",
     "ResultRepository",
     "SessionStore",
+    "RetentionCleanupManager",
 ]
 
 try:

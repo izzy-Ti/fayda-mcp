@@ -89,6 +89,44 @@ def handle_migrate(args: argparse.Namespace) -> int:
     return asyncio.run(_run())
 
 
+def handle_cleanup(args: argparse.Namespace) -> int:
+    """Execute retention cleanup of expired verification requests and results."""
+    load_env_if_requested(args.env_file)
+
+    db_url = args.database_url
+    if not db_url and args.database_url_env:
+        db_url = os.environ.get(args.database_url_env)
+
+    if not db_url:
+        db_url = os.environ.get("DATABASE_URL") or os.environ.get("DATABASE_MIGRATION_URL")
+
+    if not db_url:
+        sys.stderr.write(
+            "Error: Database URL must be provided via --database-url or --database-url-env "
+            "(or DATABASE_URL in environment).\n"
+        )
+        return 1
+
+    try:
+        from fayda_mcp.storage.postgres import PostgresResultRepository
+        from fayda_mcp.storage.retention import RetentionCleanupManager
+    except ImportError as e:
+        sys.stderr.write(f"Error: PostgreSQL dependencies missing: {e}\n")
+        return 1
+
+    async def _run() -> int:
+        repo = PostgresResultRepository.from_url(db_url)
+        manager = RetentionCleanupManager(repo)
+        try:
+            purged = await manager.run_once()
+            print(f"Retention cleanup completed: {purged} expired record(s) purged.")
+            return 0
+        finally:
+            await repo.close()
+
+    return asyncio.run(_run())
+
+
 def handle_check_config(args: argparse.Namespace) -> int:
     """Verify and print redacted Fayda MCP configuration."""
     load_env_if_requested(args.env_file)
@@ -163,6 +201,16 @@ def create_parser() -> argparse.ArgumentParser:
     migrate_p.add_argument("--target", help="Target migration version to upgrade up to")
     migrate_p.add_argument("--status", action="store_true", help="Display migration status")
 
+    # cleanup
+    cleanup_p = subparsers.add_parser("cleanup", help="Execute retention cleanup for expired records")
+    cleanup_p.add_argument("--database-url", help="Database connection URL")
+    cleanup_p.add_argument(
+        "--database-url-env",
+        default="DATABASE_URL",
+        help="Environment variable name for database URL (default: DATABASE_URL)",
+    )
+    cleanup_p.add_argument("--env-file", help="Path to .env file to load")
+
     # check-config
     check_p = subparsers.add_parser("check-config", help="Verify and display redacted configuration")
     check_p.add_argument("--env-file", help="Path to .env file to load")
@@ -193,6 +241,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.subcommand == "migrate":
         return handle_migrate(args)
+    elif args.subcommand == "cleanup":
+        return handle_cleanup(args)
     elif args.subcommand == "check-config":
         return handle_check_config(args)
     elif args.subcommand == "run":

@@ -55,6 +55,14 @@ class MigrationRunner:
                 url = url.replace("postgresql://", "postgresql+psycopg://", 1)
             elif url.startswith("sqlite://") and not url.startswith("sqlite+"):
                 url = url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+
+            is_remote_postgres = (
+                "postgresql" in url or "neon.tech" in url
+            ) and "localhost" not in url and "127.0.0.1" not in url
+            if is_remote_postgres and "sslmode=" not in url and "ssl=" not in url:
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}sslmode=require"
+
             self._engine = create_async_engine(url)
             self._owns_engine = True
         else:

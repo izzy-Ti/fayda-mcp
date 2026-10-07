@@ -27,6 +27,14 @@ class VerificationPolicy(BaseModel):
         description="List of permitted checks",
     )
     version: str = Field(default="v1", description="Policy version identifier")
+    evaluation_timezone: str = Field(
+        default="Africa/Addis_Ababa",
+        description="Host timezone for evaluation dates (default: Africa/Addis_Ababa)",
+    )
+    february_29_anniversary: str = Field(
+        default="march_1",
+        description="Anniversary rule for Feb 29 birthdates in common years ('march_1' or 'february_28')",
+    )
 
     def validate_request(self, purpose: str, checks: List[str]) -> None:
         """Validate requested purpose and checks against policy before redirect.

@@ -22,6 +22,13 @@ from fayda_mcp.localization.calendars import (
     parse_date_explicit,
     validate_birthdate,
 )
+from fayda_mcp.localization.languages import (
+    PROVIDER_LANGUAGE_CATALOG,
+    SUPPORTED_LOCALES,
+    extract_localized_claim,
+    normalize_language_tag,
+    select_localized_value,
+)
 
 __all__ = [
     "AmbiguousDateError",
@@ -44,4 +51,9 @@ __all__ = [
     "normalize_dob_with_source",
     "parse_date_explicit",
     "validate_birthdate",
+    "PROVIDER_LANGUAGE_CATALOG",
+    "SUPPORTED_LOCALES",
+    "extract_localized_claim",
+    "normalize_language_tag",
+    "select_localized_value",
 ]

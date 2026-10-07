@@ -452,8 +452,20 @@ class FaydaVerificationService:
             # Merge and normalize claims
             raw_all_claims = {**id_claims, **userinfo_claims}
             source_cal = getattr(self.config, "dob_source_calendar", "gregorian")
-            normalized = normalize_claims(raw_all_claims, source_calendar=source_cal)
-            evaluated = evaluate_checks(normalized, checks)
+            locales = getattr(self.config, "claims_locales", ["en", "am", "om", "so", "ti", "sid", "wal"])
+            normalized = normalize_claims(
+                raw_all_claims,
+                source_calendar=source_cal,
+                preferred_locales=locales,
+            )
+            eval_tz = getattr(self.policy, "evaluation_timezone", "Africa/Addis_Ababa")
+            feb29_rule = getattr(self.policy, "february_29_anniversary", "march_1")
+            evaluated = evaluate_checks(
+                normalized,
+                checks,
+                timezone_name=eval_tz,
+                february_29_anniversary=feb29_rule,
+            )
         else:
             raise ConfigurationError(
                 "A Fayda signing key is required for verification."

@@ -1,7 +1,7 @@
 """Normalization of localized and provider-specific claim formats."""
 
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # Biometric and credential fields to purge unconditionally
 DISALLOWED_PROVIDER_FIELDS = {
@@ -77,30 +77,49 @@ def normalize_birthdate(
     return normalize_dob_with_source(cleaned, source_calendar="gregorian")
 
 
-def extract_localized_string(val: Any) -> Optional[str]:
-    """Extract string value from potentially localized eSignet dictionary."""
-    if isinstance(val, str):
-        return val.strip()
-    if isinstance(val, dict):
-        # Handle {"@value": "Abebe", "@language": "eng"} or {"en": "Abebe"}
-        if "@value" in val:
-            return str(val["@value"]).strip()
-        for key in ["en", "eng", "am", "default"]:
-            if key in val:
-                return str(val[key]).strip()
-        # Fall back to first string value found
-        for v in val.values():
-            if isinstance(v, str):
-                return v.strip()
-    return None
+def extract_localized_string(
+    val: Any,
+    preferred_locales: Optional[List[str]] = None,
+    fallback_locale: str = "en",
+) -> Optional[str]:
+    """Extract string value from potentially localized eSignet dictionary or language-tagged structure.
+
+    Preserves original Unicode text without transliteration.
+    Never stringifies a raw dict or object as a name.
+    """
+    from fayda_mcp.localization.languages import select_localized_value
+    return select_localized_value(
+        val, preferred_locales=preferred_locales, fallback_locale=fallback_locale
+    )
 
 
 def normalize_claims(
     raw_claims: Dict[str, Any],
     source_calendar: Optional[str] = None,
+    preferred_locales: Optional[List[str]] = None,
+    fallback_locale: str = "en",
 ) -> Dict[str, Any]:
     """Normalize localized claims and strip disallowed biometric or credential attributes."""
     normalized: Dict[str, Any] = {}
+
+    from fayda_mcp.localization.languages import extract_localized_claim
+
+    # Check for localized names (e.g. name#om, name#am)
+    extracted_name = extract_localized_claim(
+        raw_claims,
+        "name",
+        preferred_locales=preferred_locales,
+        fallback_locale=fallback_locale,
+    )
+    if not extracted_name:
+        extracted_name = extract_localized_claim(
+            raw_claims,
+            "full_name",
+            preferred_locales=preferred_locales,
+            fallback_locale=fallback_locale,
+        )
+    if extracted_name:
+        normalized["name"] = extracted_name
 
     for k, v in raw_claims.items():
         key_lower = k.lower()
@@ -109,14 +128,22 @@ def normalize_claims(
         if key_lower in DISALLOWED_PROVIDER_FIELDS:
             continue
 
+        # Skip localized claim keys (e.g. name#om) from generic copying
+        if "#" in k:
+            continue
+
         if key_lower in ("birthdate", "dob", "date_of_birth"):
             normalized_dob = normalize_birthdate(v, source_calendar=source_calendar)
             if normalized_dob:
                 normalized["birthdate"] = normalized_dob
         elif key_lower in ("name", "full_name"):
-            name_str = extract_localized_string(v)
-            if name_str:
-                normalized["name"] = name_str
+            # Already resolved if possible above
+            if "name" not in normalized:
+                name_str = extract_localized_string(
+                    v, preferred_locales=preferred_locales, fallback_locale=fallback_locale
+                )
+                if name_str:
+                    normalized["name"] = name_str
         elif key_lower == "sub":
             normalized["sub"] = str(v)
         else:

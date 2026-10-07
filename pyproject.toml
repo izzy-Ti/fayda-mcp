@@ -12,7 +12,11 @@ dependencies = [
     "cryptography>=43.0.0",
     "pyjwt>=2.9.0",
     "fastmcp>=4.0.0",
+    "python-dotenv>=1.0.0",
 ]
+
+[project.scripts]
+fayda-mcp = "fayda_mcp.cli:main"
 
 [project.optional-dependencies]
 fastapi = [

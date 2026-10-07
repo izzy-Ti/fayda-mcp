@@ -292,6 +292,27 @@ class TestPostgresStorageAdapter(BaseStorageAdapterContractTests):
         return self.audit
 
 
+class TestRedisStorageAdapter(BaseStorageAdapterContractTests):
+    """Run the storage contract suite against RedisSessionStore."""
+
+    def setup_method(self) -> None:
+        import fakeredis.aioredis as fake_aioredis
+        from fayda_mcp.storage.redis import RedisSessionStore
+
+        self.fake_client = fake_aioredis.FakeRedis(decode_responses=True)
+        self.session_store = RedisSessionStore(self.fake_client)
+
+    async def create_session_store(self) -> SessionStore:
+        await self.fake_client.flushdb()
+        return self.session_store
+
+    async def create_result_repository(self) -> ResultRepository:
+        return MemoryResultRepository()
+
+    async def create_audit_logger(self) -> AuditLogger:
+        return MemoryAuditLogger()
+
+
 @pytest.mark.asyncio
 async def test_service_duplicate_callback_state_fails():
     """Verify at the service level that replaying the same callback state raises an error."""

@@ -28,6 +28,10 @@ class SessionStore(Protocol):
         """Explicitly delete a session. Returns True if deleted."""
         ...
 
+    async def close(self) -> None:
+        """Close underlying connection pools and resources."""
+        ...
+
 
 @runtime_checkable
 class ResultRepository(Protocol):

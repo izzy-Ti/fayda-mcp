@@ -27,3 +27,9 @@ try:
     __all__.extend(["PostgresAuditLogger", "PostgresResultRepository"])
 except ImportError:
     pass
+
+try:
+    from fayda_mcp.storage.redis import RedisSessionStore
+    __all__.append("RedisSessionStore")
+except ImportError:
+    pass

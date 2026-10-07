@@ -47,6 +47,10 @@ class MemorySessionStore:
         async with self._lock:
             return self._sessions.pop(state, None) is not None
 
+    async def close(self) -> None:
+        """Close in-memory session store resources."""
+        pass
+
 
 class MemoryResultRepository:
     """In-memory verification request and result repository with idempotency and atomic finalization."""

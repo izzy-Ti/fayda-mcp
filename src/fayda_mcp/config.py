@@ -29,6 +29,7 @@ class FaydaConfig(BaseModel):
     result_ttl_seconds: int = 900
     jwt_clock_skew_seconds: int = 60
     jwks_cache_ttl_seconds: int = 300
+    dob_source_calendar: str = Field(default="gregorian", description="Explicit calendar convention for DOB claim: 'gregorian' or 'ethiopic'")
 
     @classmethod
     def from_env(cls, env_prefix: str = "FAYDA_", dotenv_path: Optional[str] = None) -> "FaydaConfig":
@@ -123,6 +124,7 @@ class FaydaConfig(BaseModel):
             client_assertion_ttl_seconds=ttl_seconds,
             session_ttl_seconds=int(get_val(f"{env_prefix}SESSION_TTL_SECONDS", "SESSION_TTL_SECONDS", default="600")),
             result_ttl_seconds=int(get_val(f"{env_prefix}RESULT_TTL_SECONDS", "RESULT_TTL_SECONDS", default="900")),
+            dob_source_calendar=get_val(f"{env_prefix}DOB_SOURCE_CALENDAR", "DOB_SOURCE_CALENDAR", default="gregorian"),
         )
 
     @classmethod

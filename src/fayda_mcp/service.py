@@ -451,7 +451,8 @@ class FaydaVerificationService:
 
             # Merge and normalize claims
             raw_all_claims = {**id_claims, **userinfo_claims}
-            normalized = normalize_claims(raw_all_claims)
+            source_cal = getattr(self.config, "dob_source_calendar", "gregorian")
+            normalized = normalize_claims(raw_all_claims, source_calendar=source_cal)
             evaluated = evaluate_checks(normalized, checks)
         else:
             raise ConfigurationError(

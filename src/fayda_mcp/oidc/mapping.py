@@ -23,11 +23,16 @@ DISALLOWED_PROVIDER_FIELDS = {
 }
 
 
-def normalize_birthdate(raw_dob: Any) -> Optional[str]:
+def normalize_birthdate(
+    raw_dob: Any,
+    source_calendar: Optional[str] = None,
+) -> Optional[str]:
     """Normalize varied date-of-birth formats into ISO YYYY-MM-DD.
 
-    Handles YYYY-MM-DD, YYYY/MM/DD, DD-MM-YYYY, DD/MM/YYYY.
-    Returns None if missing or unparseable.
+    Calendar source must be explicit:
+    - Standard OIDC birthdate is Gregorian YYYY-MM-DD (including documented partial dates).
+    - Never reinterpret compliant Gregorian dates based on separators, low years, or language.
+    - Ethiopic dates are supported only when explicitly specified via source_calendar or metadata.
     """
     if isinstance(raw_dob, dict):
         raw_dob = extract_localized_string(raw_dob)
@@ -37,31 +42,39 @@ def normalize_birthdate(raw_dob: Any) -> Optional[str]:
 
     cleaned = raw_dob.strip()
 
+    if source_calendar and source_calendar.lower().strip() in ("ethiopic", "ec"):
+        from fayda_mcp.localization.calendars import normalize_dob_with_source
+        return normalize_dob_with_source(cleaned, source_calendar="ethiopic")
+
     # Pattern: YYYY-MM-DD or YYYY/MM/DD
     m1 = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$", cleaned)
     if m1:
         year, month, day = int(m1.group(1)), int(m1.group(2)), int(m1.group(3))
-        if 1900 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31:
-            try:
-                from datetime import date as dt_date
-                dt_date(year, month, day)
-                return f"{year:04d}-{month:02d}-{day:02d}"
-            except ValueError:
-                return None
+        if not (1900 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31):
+            return None
+        try:
+            from datetime import date as dt_date
+            dt_date(year, month, day)
+            return f"{year:04d}-{month:02d}-{day:02d}"
+        except ValueError:
+            return None
 
     # Pattern: DD-MM-YYYY or DD/MM/YYYY
     m2 = re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$", cleaned)
     if m2:
         day, month, year = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
-        if 1900 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31:
-            try:
-                from datetime import date as dt_date
-                dt_date(year, month, day)
-                return f"{year:04d}-{month:02d}-{day:02d}"
-            except ValueError:
-                return None
+        if not (1900 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31):
+            return None
+        try:
+            from datetime import date as dt_date
+            dt_date(year, month, day)
+            return f"{year:04d}-{month:02d}-{day:02d}"
+        except ValueError:
+            return None
 
-    return None
+    # Fallback to standard OIDC partial date handler (YYYY-MM or 0000-MM-DD)
+    from fayda_mcp.localization.calendars import normalize_dob_with_source
+    return normalize_dob_with_source(cleaned, source_calendar="gregorian")
 
 
 def extract_localized_string(val: Any) -> Optional[str]:
@@ -82,7 +95,10 @@ def extract_localized_string(val: Any) -> Optional[str]:
     return None
 
 
-def normalize_claims(raw_claims: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_claims(
+    raw_claims: Dict[str, Any],
+    source_calendar: Optional[str] = None,
+) -> Dict[str, Any]:
     """Normalize localized claims and strip disallowed biometric or credential attributes."""
     normalized: Dict[str, Any] = {}
 
@@ -94,7 +110,7 @@ def normalize_claims(raw_claims: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         if key_lower in ("birthdate", "dob", "date_of_birth"):
-            normalized_dob = normalize_birthdate(v)
+            normalized_dob = normalize_birthdate(v, source_calendar=source_calendar)
             if normalized_dob:
                 normalized["birthdate"] = normalized_dob
         elif key_lower in ("name", "full_name"):

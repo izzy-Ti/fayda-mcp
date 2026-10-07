@@ -1,0 +1,124 @@
+{
+  "reference_vectors": [
+    {
+      "description": "Emperor Theodore letter #1 to Queen Victoria",
+      "ethiopic": {"year": 1855, "month": 2, "day": 20, "era": "amete_mihret"},
+      "gregorian": {"year": 1862, "month": 10, "day": 29},
+      "jdn": 2401443
+    },
+    {
+      "description": "Emperor Theodore letter #2",
+      "ethiopic": {"year": 1857, "month": 10, "day": 29, "era": "amete_mihret"},
+      "gregorian": {"year": 1865, "month": 7, "day": 5},
+      "jdn": 2402423
+    },
+    {
+      "description": "Emperor Theodore letter #3",
+      "ethiopic": {"year": 1858, "month": 5, "day": 22, "era": "amete_mihret"},
+      "gregorian": {"year": 1866, "month": 1, "day": 29},
+      "jdn": 2402631
+    },
+    {
+      "description": "Emperor Theodore letter #4",
+      "ethiopic": {"year": 1858, "month": 8, "day": 10, "era": "amete_mihret"},
+      "gregorian": {"year": 1866, "month": 4, "day": 17},
+      "jdn": 2402709
+    },
+    {
+      "description": "Emperor Theodore letter #5",
+      "ethiopic": {"year": 1859, "month": 4, "day": 28, "era": "amete_mihret"},
+      "gregorian": {"year": 1867, "month": 1, "day": 5},
+      "jdn": 2402972
+    },
+    {
+      "description": "Emperor Theodore letter #6",
+      "ethiopic": {"year": 1860, "month": 5, "day": 5, "era": "amete_mihret"},
+      "gregorian": {"year": 1868, "month": 1, "day": 13},
+      "jdn": 2403345
+    },
+    {
+      "description": "1900 Gregorian New Year boundary",
+      "ethiopic": {"year": 1892, "month": 4, "day": 23, "era": "amete_mihret"},
+      "gregorian": {"year": 1900, "month": 1, "day": 1},
+      "jdn": 2415021
+    },
+    {
+      "description": "1900 Gregorian Year End boundary",
+      "ethiopic": {"year": 1893, "month": 4, "day": 22, "era": "amete_mihret"},
+      "gregorian": {"year": 1900, "month": 12, "day": 31},
+      "jdn": 2415385
+    },
+    {
+      "description": "1992 Gregorian Year End boundary",
+      "ethiopic": {"year": 1985, "month": 4, "day": 22, "era": "amete_mihret"},
+      "gregorian": {"year": 1992, "month": 12, "day": 31},
+      "jdn": 2448988
+    },
+    {
+      "description": "1996 Gregorian Leap Year End boundary",
+      "ethiopic": {"year": 1989, "month": 4, "day": 22, "era": "amete_mihret"},
+      "gregorian": {"year": 1996, "month": 12, "day": 31},
+      "jdn": 2450449
+    },
+    {
+      "description": "2000 Gregorian Millennium Leap Year End boundary",
+      "ethiopic": {"year": 1993, "month": 4, "day": 22, "era": "amete_mihret"},
+      "gregorian": {"year": 2000, "month": 12, "day": 31},
+      "jdn": 2451910
+    },
+    {
+      "description": "2004 Gregorian Leap Year End boundary",
+      "ethiopic": {"year": 1997, "month": 4, "day": 22, "era": "amete_mihret"},
+      "gregorian": {"year": 2004, "month": 12, "day": 31},
+      "jdn": 2453371
+    },
+    {
+      "description": "2005 Gregorian New Year boundary",
+      "ethiopic": {"year": 1997, "month": 4, "day": 23, "era": "amete_mihret"},
+      "gregorian": {"year": 2005, "month": 1, "day": 1},
+      "jdn": 2453372
+    },
+    {
+      "description": "Ethiopic 2000 common year Pagume 5",
+      "ethiopic": {"year": 2000, "month": 13, "day": 5, "era": "amete_mihret"},
+      "gregorian": {"year": 2008, "month": 9, "day": 10},
+      "jdn": 2454720
+    },
+    {
+      "description": "Ethiopic 2015 leap year Pagume 6",
+      "ethiopic": {"year": 2015, "month": 13, "day": 6, "era": "amete_mihret"},
+      "gregorian": {"year": 2023, "month": 9, "day": 11},
+      "jdn": 2460199
+    },
+    {
+      "description": "Ethiopic 2016 New Year Meskerem 1 following leap year",
+      "ethiopic": {"year": 2016, "month": 1, "day": 1, "era": "amete_mihret"},
+      "gregorian": {"year": 2023, "month": 9, "day": 12},
+      "jdn": 2460200
+    },
+    {
+      "description": "Ethiopic 2017 New Year Meskerem 1",
+      "ethiopic": {"year": 2017, "month": 1, "day": 1, "era": "amete_mihret"},
+      "gregorian": {"year": 2024, "month": 9, "day": 11},
+      "jdn": 2460565
+    },
+    {
+      "description": "Amete Alem epoch alignment (year 5500 Meskerem 1)",
+      "ethiopic": {"year": 5500, "month": 1, "day": 1, "era": "amete_alem"},
+      "gregorian": {"year": 7, "month": 8, "day": 28},
+      "jdn": 1723856
+    },
+    {
+      "description": "Amete Alem leap year Pagume 6 (year 5499)",
+      "ethiopic": {"year": 5499, "month": 13, "day": 6, "era": "amete_alem"},
+      "gregorian": {"year": 7, "month": 8, "day": 27},
+      "jdn": 1723855
+    }
+  ],
+  "oidc_partial_dates": [
+    {"input": "1995-05", "expected": "1995-05"},
+    {"input": "1995/05", "expected": "1995-05"},
+    {"input": "0000-11-20", "expected": "0000-11-20"},
+    {"input": "0000/11/20", "expected": "0000-11-20"}
+  ]
+}

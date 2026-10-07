@@ -150,14 +150,19 @@ class RedisSessionStore:
     - close: cleans up connection pool and socket handles.
     """
 
-    def __init__(self, redis_client: Any, key_prefix: str = "fayda:session:") -> None:
+    def __init__(
+        self,
+        redis_client: Any,
+        key_prefix: str = "fayda:session:",
+        owned: bool = False,
+    ) -> None:
         if aioredis is None:
             raise ImportError(
                 "Redis extra is not installed. Install with: pip install 'fayda-mcp[redis]'"
             )
         self.redis = redis_client
         self.key_prefix = key_prefix
-        self._owned_client = False
+        self._owned_client = owned
 
     @classmethod
     def from_url(
@@ -264,8 +269,11 @@ class RedisSessionStore:
         return bool(deleted_count > 0)
 
     async def close(self) -> None:
-        """Close underlying Redis connection pool and sockets."""
-        if self.redis is not None:
+        """Close underlying Redis connection pool and sockets if owned.
+
+        Shutdown does not close a host-owned (borrowed) client.
+        """
+        if self._owned_client and self.redis is not None:
             if hasattr(self.redis, "aclose"):
                 await self.redis.aclose()
             elif hasattr(self.redis, "close"):

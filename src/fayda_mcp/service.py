@@ -1,5 +1,6 @@
 """Core framework-neutral verification service."""
 
+import asyncio
 import datetime
 import hashlib
 import json
@@ -162,22 +163,32 @@ class FaydaVerificationService:
                     f"Idempotency key '{idempotency_key}' has already been used with different parameters"
                 )
 
-            # Briefly retain sensitive authorization URL only while pending
-            auth_url = ""
-            if existing_or_reserved.get("status") == "pending":
-                auth_url = existing_or_reserved.get("authorization_url") or existing_or_reserved.get("auth_url") or ""
+            # Briefly retain sensitive authorization URL only while pending.
+            # If the concurrent request is still initializing, wait briefly for it to reach pending.
+            current_rec = existing_or_reserved
+            if current_rec.get("status") == "initializing":
+                for _ in range(40):
+                    await asyncio.sleep(0.05)
+                    poll_rec = await self.results.get_request(current_rec["request_id"])
+                    if poll_rec and poll_rec.get("status") != "initializing":
+                        current_rec = poll_rec
+                        break
 
-            exp_str = existing_or_reserved.get("expires_at")
-            if not exp_str and existing_or_reserved.get("session_expires_at"):
+            auth_url = ""
+            if current_rec.get("status") == "pending":
+                auth_url = current_rec.get("authorization_url") or current_rec.get("auth_url") or ""
+
+            exp_str = current_rec.get("expires_at")
+            if not exp_str and current_rec.get("session_expires_at"):
                 try:
                     exp_str = datetime.datetime.fromtimestamp(
-                        float(existing_or_reserved["session_expires_at"]), tz=datetime.timezone.utc
+                        float(current_rec["session_expires_at"]), tz=datetime.timezone.utc
                     ).isoformat()
                 except Exception:
-                    exp_str = str(existing_or_reserved["session_expires_at"])
+                    exp_str = str(current_rec["session_expires_at"])
 
             return StartVerificationResponse(
-                request_id=existing_or_reserved["request_id"],
+                request_id=current_rec["request_id"],
                 authorization_url=auth_url,
                 expires_at=exp_str or "",
             )
@@ -242,7 +253,12 @@ class FaydaVerificationService:
         if self.audit:
             await self.audit.record_event(
                 "verification_started",
-                {"request_id": actual_req_id, "tenant_id": context.tenant_id, "purpose": purpose},
+                {
+                    "request_id": actual_req_id,
+                    "tenant_id": context.tenant_id,
+                    "principal_id": context.principal_id,
+                    "purpose": purpose,
+                },
             )
 
         return StartVerificationResponse(
@@ -343,7 +359,11 @@ class FaydaVerificationService:
         if self.audit:
             await self.audit.record_event(
                 "verification_cancelled",
-                {"request_id": request_id, "tenant_id": context.tenant_id},
+                {
+                    "request_id": request_id,
+                    "tenant_id": context.tenant_id,
+                    "principal_id": context.principal_id,
+                },
             )
         return CancelVerificationResponse(request_id=request_id, status="cancelled")
 
@@ -475,7 +495,12 @@ class FaydaVerificationService:
         if self.audit:
             await self.audit.record_event(
                 "verification_completed",
-                {"request_id": request_id, "status": outcome_status},
+                {
+                    "request_id": request_id,
+                    "tenant_id": record.get("tenant_id", "default"),
+                    "principal_id": record.get("principal_id", "default"),
+                    "status": outcome_status,
+                },
             )
 
         return result

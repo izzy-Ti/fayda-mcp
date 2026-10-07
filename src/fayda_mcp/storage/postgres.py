@@ -191,7 +191,8 @@ class PostgresResultRepository:
             status = :status,
             checks = :checks,
             session_expires_at = :session_expires_at,
-            retention_expires_at = :retention_expires_at
+            retention_expires_at = :retention_expires_at,
+            auth_url = :auth_url
         """
 
         params = {
@@ -612,8 +613,8 @@ class PostgresAuditLogger:
         event_id = str(uuid.uuid4())
         occurred_at = time.time()
         request_id = safe_metadata.get("request_id")
-        tenant_id = safe_metadata.get("tenant_id")
-        principal_id = safe_metadata.get("principal_id")
+        tenant_id = safe_metadata.get("tenant_id") or "default"
+        principal_id = safe_metadata.get("principal_id") or "default"
         metadata_json = json.dumps(safe_metadata)
 
         sql = f"""

@@ -29,7 +29,7 @@ except ImportError:
     pass
 
 try:
-    from fayda_mcp.storage.redis import RedisSessionStore
-    __all__.append("RedisSessionStore")
+    from fayda_mcp.storage.redis import RedisSessionStore, parse_redis_url, redact_redis_url
+    __all__.extend(["RedisSessionStore", "parse_redis_url", "redact_redis_url"])
 except ImportError:
     pass

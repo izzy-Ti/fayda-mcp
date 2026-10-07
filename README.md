@@ -33,28 +33,33 @@ pip install "fayda-mcp[fastapi,redis,postgres]"
 ## Quick Start (Sandbox)
 
 ```python
+import base64
 from fayda_mcp import FaydaConfig, FaydaVerificationService
 from fayda_mcp.storage.memory import MemorySessionStore, MemoryResultRepository
 from fayda_mcp.mcp.factory import create_mcp_server
 
-# 1. Configure with official Fayda sandbox preset
-config = FaydaConfig.sandbox(
-    client_id="your_registered_client_id",
-    redirect_uri="http://localhost:8000/auth/fayda/callback",
+# Configure your Fayda / eSignet credentials
+config = FaydaConfig(
+    client_id="YOUR_CLIENT_ID",
+    redirect_uri="http://localhost:3000/callback",
+    authorization_endpoint="[https://esignet.ida.fayda.et/authorize](https://esignet.ida.fayda.et/authorize)",
+    token_endpoint="[https://esignet.ida.fayda.et/v1/esignet/oauth/v2/token](https://esignet.ida.fayda.et/v1/esignet/oauth/v2/token)",
+    userinfo_endpoint="[https://esignet.ida.fayda.et/v1/esignet/oidc/userinfo](https://esignet.ida.fayda.et/v1/esignet/oidc/userinfo)",
+    issuer="[https://esignet.ida.fayda.et](https://esignet.ida.fayda.et)",
+    jwks_uri="[https://esignet.ida.fayda.et/v1/esignet/oauth/v2/jwks.json](https://esignet.ida.fayda.et/v1/esignet/oauth/v2/jwks.json)",
+    private_key=base64.b64decode("YOUR_PRIVATE_KEY_B64").decode("utf-8"),
 )
 
-# 2. Initialize verification service
 service = FaydaVerificationService(
     config=config,
     sessions=MemorySessionStore(),
     results=MemoryResultRepository(),
 )
 
-# 3. Create FastMCP server
 server = create_mcp_server(service=service)
 
-# 4. Run over stdio (e.g. for Claude Desktop or Cursor)
-server.run(transport="stdio")
+if __name__ == "__main__":
+    server.run(transport="stdio")
 ```
 
 ---

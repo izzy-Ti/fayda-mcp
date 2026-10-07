@@ -155,6 +155,39 @@ class BaseStorageAdapterContractTests:
         events_all = await logger.get_events()
         assert len(events_all) == 3
 
+    @pytest.mark.asyncio
+    async def test_genuine_not_found_returns_none(self):
+        """Acceptance: No production method silently returns None except a genuine not-found lookup."""
+        repo = await self.create_result_repository()
+        assert await repo.get_request("non_existent_req_id") is None
+        assert await repo.get_result("non_existent_req_id") is None
+        assert await repo.find_by_idempotency_key("tenant_x", "principal_y", "key_z") is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_purges_expired_records(self):
+        """Verify cleanup purges expired requests and results."""
+        repo = await self.create_result_repository()
+        req_id = "vr_cleanup_exp"
+        await repo.save_request(req_id, {"status": "pending"}, ttl_seconds=0)
+        res = VerificationResult(
+            request_id=req_id,
+            status="verified",
+            checks={"identity_verified": True},
+        )
+        await repo.save_result(req_id, res, ttl_seconds=0)
+
+        await asyncio.sleep(0.01)
+        purged = await repo.cleanup()
+        assert purged >= 2
+        assert await repo.get_request(req_id) is None
+        assert await repo.get_result(req_id) is None
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_close(self):
+        """Verify repository close cleans up without error."""
+        repo = await self.create_result_repository()
+        await repo.close()
+
 
 class TestMemoryStorageAdapter(BaseStorageAdapterContractTests):
     """Run the storage contract suite against Memory adapters."""
@@ -167,6 +200,41 @@ class TestMemoryStorageAdapter(BaseStorageAdapterContractTests):
 
     async def create_audit_logger(self) -> AuditLogger:
         return MemoryAuditLogger()
+
+
+class TestPostgresStorageAdapter(BaseStorageAdapterContractTests):
+    """Run the storage contract suite against PostgreSQL / SQL adapters."""
+
+    def setup_method(self) -> None:
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+        from fayda_mcp.storage.postgres import PostgresAuditLogger, PostgresResultRepository
+
+        self.engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        self.factory = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
+        self.repo = PostgresResultRepository(session_factory=self.factory, engine=self.engine)
+        self.audit = PostgresAuditLogger(session_factory=self.factory)
+        self._initialized = False
+
+    async def _ensure_tables(self) -> None:
+        if not self._initialized:
+            await self.repo.create_tables()
+            self._initialized = True
+
+    async def create_session_store(self) -> SessionStore:
+        return MemorySessionStore()
+
+    async def create_result_repository(self) -> ResultRepository:
+        await self._ensure_tables()
+        return self.repo
+
+    async def create_audit_logger(self) -> AuditLogger:
+        await self._ensure_tables()
+        return self.audit
 
 
 @pytest.mark.asyncio

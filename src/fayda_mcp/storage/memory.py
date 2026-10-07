@@ -158,6 +158,38 @@ class MemoryResultRepository:
                 return None
             return result
 
+    async def cleanup(self) -> int:
+        """Purge expired requests and results. Returns count of purged records."""
+        now = time.time()
+        purged = 0
+        async with self._lock:
+            expired_reqs = [req_id for req_id, (_, exp) in self._requests.items() if now >= exp]
+            for req_id in expired_reqs:
+                self._requests.pop(req_id, None)
+                purged += 1
+
+            # Clean up idempotency index pointing to purged or missing requests
+            stale_keys = [
+                key for key, req_id in self._idempotency_index.items()
+                if req_id not in self._requests
+            ]
+            for key in stale_keys:
+                self._idempotency_index.pop(key, None)
+
+            expired_results = [req_id for req_id, (_, exp) in self._results.items() if now >= exp]
+            for req_id in expired_results:
+                self._results.pop(req_id, None)
+                purged += 1
+
+        return purged
+
+    async def close(self) -> None:
+        """Lifecycle close: release resources."""
+        async with self._lock:
+            self._requests.clear()
+            self._results.clear()
+            self._idempotency_index.clear()
+
 
 class MemoryAuditLogger:
     """In-memory safe audit trail."""

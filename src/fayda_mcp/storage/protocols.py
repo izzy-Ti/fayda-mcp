@@ -70,6 +70,14 @@ class ResultRepository(Protocol):
         """Retrieve final evaluated verification result."""
         ...
 
+    async def cleanup(self) -> int:
+        """Purge expired requests and results according to retention timestamps. Returns count of purged records."""
+        ...
+
+    async def close(self) -> None:
+        """Close underlying connection pools and resources."""
+        ...
+
 
 @runtime_checkable
 class AuditLogger(Protocol):

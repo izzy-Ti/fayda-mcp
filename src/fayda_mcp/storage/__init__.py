@@ -18,3 +18,9 @@ __all__ = [
     "ResultRepository",
     "SessionStore",
 ]
+
+try:
+    from fayda_mcp.storage.postgres import PostgresAuditLogger, PostgresResultRepository
+    __all__.extend(["PostgresAuditLogger", "PostgresResultRepository"])
+except ImportError:
+    pass

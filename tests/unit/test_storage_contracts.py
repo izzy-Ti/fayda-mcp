@@ -183,6 +183,61 @@ class BaseStorageAdapterContractTests:
         assert await repo.get_result(req_id) is None
 
     @pytest.mark.asyncio
+    async def test_reserve_request_unique_and_idempotent(self):
+        """Verify reserve_request atomically prevents duplicate reservations for same idempotency key."""
+        repo = await self.create_result_repository()
+        req_id_1 = "vr_res_1"
+        data_1 = {
+            "tenant_id": "tenant-A",
+            "principal_id": "principal-A",
+            "idempotency_key": "idemp-unique-1",
+            "status": "initializing",
+            "request_fingerprint": "fp_hash_1",
+            "auth_url": "https://auth.example/1",
+        }
+
+        # 1. First reservation succeeds
+        reserved_1, rec_1 = await repo.reserve_request(req_id_1, data_1, ttl_seconds=60)
+        assert reserved_1 is True
+        assert rec_1["status"] == "initializing"
+
+        # 2. Second reservation with same idempotency key returns False and existing record
+        req_id_2 = "vr_res_2"
+        data_2 = {
+            "tenant_id": "tenant-A",
+            "principal_id": "principal-A",
+            "idempotency_key": "idemp-unique-1",
+            "status": "initializing",
+            "request_fingerprint": "fp_hash_1",
+            "auth_url": "https://auth.example/2",
+        }
+        reserved_2, rec_2 = await repo.reserve_request(req_id_2, data_2, ttl_seconds=60)
+        assert reserved_2 is False
+        assert rec_2["request_id"] == req_id_1
+
+    @pytest.mark.asyncio
+    async def test_cancelled_or_terminal_cannot_finalize(self):
+        """Acceptance requirement: Cancelled/expired requests cannot finalize verified."""
+        repo = await self.create_result_repository()
+        req_id = "vr_cancel_fin"
+        await repo.save_request(req_id, {"status": "pending", "auth_url": "https://secret/auth"}, ttl_seconds=60)
+
+        # Mark request as cancelled
+        await repo.update_status(req_id, "cancelled")
+
+        # Verify auth_url was purged on cancellation
+        cancelled_req = await repo.get_request(req_id)
+        assert cancelled_req is not None
+        assert cancelled_req["status"] == "cancelled"
+        assert not cancelled_req.get("authorization_url") and not cancelled_req.get("auth_url")
+
+        # Attempt to finalize result on cancelled request fails
+        res = VerificationResult(request_id=req_id, status="verified", checks={"identity_verified": True})
+        success = await repo.finalize_result(req_id, res, ttl_seconds=60)
+        assert success is False
+        assert await repo.get_result(req_id) is None
+
+    @pytest.mark.asyncio
     async def test_lifecycle_close(self):
         """Verify repository close cleans up without error."""
         repo = await self.create_result_repository()

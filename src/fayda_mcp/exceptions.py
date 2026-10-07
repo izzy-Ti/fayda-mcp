@@ -88,3 +88,14 @@ class TokenValidationError(FaydaMCPError):
 
     def __init__(self, message: str = "Token validation failed", details: Optional[Dict[str, Any]] = None):
         super().__init__(message=message, code="token_validation_error", details=details)
+
+
+class IdempotencyConflictError(FaydaMCPError):
+    """Raised when an idempotency key is reused with different request parameters."""
+
+    def __init__(
+        self,
+        message: str = "Idempotency key has already been used with different parameters",
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message=message, code="idempotency_conflict", details=details)

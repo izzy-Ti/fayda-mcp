@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from fayda_mcp.schemas import VerificationResult
 
 try:
@@ -189,6 +189,83 @@ class PostgresResultRepository:
             async with session.begin():
                 await session.execute(_sql_text(sql), params)
 
+    async def reserve_request(
+        self, request_id: str, data: Dict[str, Any], ttl_seconds: int = 900
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Atomically reserve a request using unique insert.
+
+        Returns (True, data) if successfully reserved.
+        Returns (False, existing_record) if a request with the same idempotency key already exists.
+        """
+        now = time.time()
+        session_expires_at = now + ttl_seconds
+        retention_expires_at = now + ttl_seconds
+
+        req_copy = dict(data)
+        tenant_id = str(req_copy.get("tenant_id", "default"))
+        principal_id = str(req_copy.get("principal_id", "anonymous"))
+        app_user_ref = req_copy.get("application_user_ref")
+        idempotency_key = req_copy.get("idempotency_key")
+        purpose = req_copy.get("purpose")
+        status = str(req_copy.get("status", "initializing"))
+        policy_version = req_copy.get("policy_version", "v1")
+        auth_url = req_copy.get("authorization_url") or req_copy.get("auth_url")
+        checks_json = json.dumps(req_copy.get("checks", []))
+        fingerprint = req_copy.get("request_fingerprint")
+
+        sql_reserve = f"""
+        INSERT INTO {self.requests_table} (
+            request_id, tenant_id, principal_id, application_user_ref,
+            idempotency_key, request_fingerprint, purpose, checks,
+            status, created_at, session_expires_at, retention_expires_at,
+            policy_version, auth_url
+        ) VALUES (
+            :request_id, :tenant_id, :principal_id, :application_user_ref,
+            :idempotency_key, :request_fingerprint, :purpose, :checks,
+            :status, :created_at, :session_expires_at, :retention_expires_at,
+            :policy_version, :auth_url
+        )
+        ON CONFLICT (tenant_id, principal_id, idempotency_key) DO NOTHING
+        """
+
+        params = {
+            "request_id": request_id,
+            "tenant_id": tenant_id,
+            "principal_id": principal_id,
+            "application_user_ref": app_user_ref,
+            "idempotency_key": idempotency_key,
+            "request_fingerprint": fingerprint,
+            "purpose": purpose,
+            "checks": checks_json,
+            "status": status,
+            "created_at": now,
+            "session_expires_at": session_expires_at,
+            "retention_expires_at": retention_expires_at,
+            "policy_version": policy_version,
+            "auth_url": auth_url,
+        }
+
+        async with self._lock:
+            async with self.session_factory() as session:
+                async with session.begin():
+                    res = await session.execute(_sql_text(sql_reserve), params)
+                    if res.rowcount and res.rowcount > 0:
+                        req_copy["status"] = status
+                        req_copy["created_at"] = now
+                        req_copy["session_expires_at"] = session_expires_at
+                        req_copy["retention_expires_at"] = retention_expires_at
+                        return True, req_copy
+
+            if idempotency_key:
+                existing = await self.find_by_idempotency_key(
+                    tenant_id=tenant_id,
+                    principal_id=principal_id,
+                    idempotency_key=str(idempotency_key),
+                )
+                if existing:
+                    return False, existing
+            return False, req_copy
+
     async def get_request(self, request_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve verification request record by ID. Returns None if expired or not found."""
         sql = f"""
@@ -286,34 +363,45 @@ class PostgresResultRepository:
             }
 
     async def update_status(self, request_id: str, status: str) -> None:
-        """Update request status (pending, processing, cancelled, etc.)."""
-        sql = f"""
-        UPDATE {self.requests_table}
-        SET status = :status
-        WHERE request_id = :request_id
-        """
+        """Update request status (pending, processing, cancelled, etc.). Purges auth_url if terminal."""
+        if status in ("verified", "rejected", "failed", "cancelled", "expired"):
+            sql = f"""
+            UPDATE {self.requests_table}
+            SET status = :status, auth_url = NULL
+            WHERE request_id = :request_id
+            """
+        else:
+            sql = f"""
+            UPDATE {self.requests_table}
+            SET status = :status
+            WHERE request_id = :request_id
+            """
         async with self.session_factory() as session:
             async with session.begin():
                 await session.execute(_sql_text(sql), {"request_id": request_id, "status": status})
 
     async def finalize_result(
-        self, request_id: str, result: VerificationResult, ttl_seconds: int = 900
+        self,
+        request_id: str,
+        result: VerificationResult,
+        ttl_seconds: int = 900,
+        audit_event: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Atomically finalize verification outcome in a single transaction.
 
         Returns True if transitioning from non-terminal state to result.status.
-        Returns False if the request does not exist or has already been finalized.
+        Returns False if the request does not exist or has already been finalized/cancelled.
         """
         now = time.time()
         result_expires_at = now + ttl_seconds
         checks_json = json.dumps(result.checks)
 
-        # 1. Atomic conditional update on requests table
+        # 1. Atomic conditional update on requests table (also purges auth_url)
         sql_update = f"""
         UPDATE {self.requests_table}
-        SET status = :status
+        SET status = :status, auth_url = NULL
         WHERE request_id = :request_id
-          AND status NOT IN ('verified', 'rejected', 'failed', 'cancelled')
+          AND status NOT IN ('verified', 'rejected', 'failed', 'cancelled', 'expired')
         """
 
         # 2. Insert into results table
@@ -353,6 +441,34 @@ class PostgresResultRepository:
                         "policy_version": "v1",
                     }
                     await session.execute(_sql_text(sql_insert_result), params_insert)
+
+                    # 3. Atomically record audit event in the same transaction if provided
+                    if audit_event:
+                        event_id = str(uuid.uuid4())
+                        event_type = audit_event.get("event_type", "verification_completed")
+                        safe_meta = json.dumps(audit_event.get("metadata", {}))
+                        sql_insert_audit = f"""
+                        INSERT INTO {self.audit_table} (
+                            event_id, request_id, tenant_id, principal_id,
+                            event_type, occurred_at, safe_metadata
+                        )
+                        SELECT
+                            :event_id, r.request_id, r.tenant_id, r.principal_id,
+                            :event_type, :occurred_at, :safe_metadata
+                        FROM {self.requests_table} r
+                        WHERE r.request_id = :request_id
+                        """
+                        await session.execute(
+                            _sql_text(sql_insert_audit),
+                            {
+                                "event_id": event_id,
+                                "request_id": request_id,
+                                "event_type": event_type,
+                                "occurred_at": now,
+                                "safe_metadata": safe_meta,
+                            },
+                        )
+
                     return True
 
     async def save_result(self, request_id: str, result: VerificationResult, ttl_seconds: int = 900) -> None:

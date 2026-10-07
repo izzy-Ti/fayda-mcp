@@ -101,21 +101,62 @@ class MemoryResultRepository:
                 return None
             return dict(data)
 
+    async def reserve_request(
+        self, request_id: str, data: Dict[str, Any], ttl_seconds: int = 900
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Atomically reserve request using unique insert.
+
+        Returns (True, data) if successfully reserved.
+        Returns (False, existing_record) if a request with the same idempotency key already exists.
+        """
+        async with self._lock:
+            tenant_id = str(data.get("tenant_id", "default"))
+            principal_id = str(data.get("principal_id", "anonymous"))
+            idempotency_key = data.get("idempotency_key")
+            now = time.time()
+
+            if idempotency_key:
+                key = (tenant_id, principal_id, str(idempotency_key))
+                existing_id = self._idempotency_index.get(key)
+                if existing_id and existing_id in self._requests:
+                    existing_data, expires_at = self._requests[existing_id]
+                    if now < expires_at:
+                        return False, dict(existing_data)
+                    else:
+                        self._requests.pop(existing_id, None)
+                        self._idempotency_index.pop(key, None)
+
+            expires_at = now + ttl_seconds
+            req_data = dict(data)
+            req_data["request_id"] = request_id
+            req_data.setdefault("status", "initializing")
+            self._requests[request_id] = (req_data, expires_at)
+            if idempotency_key:
+                self._idempotency_index[(tenant_id, principal_id, str(idempotency_key))] = request_id
+            return True, dict(req_data)
+
     async def update_status(self, request_id: str, status: str) -> None:
         async with self._lock:
             entry = self._requests.get(request_id)
             if entry is not None:
                 data, expires_at = entry
                 data["status"] = status
+                if status in ("verified", "rejected", "failed", "cancelled", "expired"):
+                    data.pop("authorization_url", None)
+                    data.pop("auth_url", None)
                 self._requests[request_id] = (data, expires_at)
 
     async def finalize_result(
-        self, request_id: str, result: VerificationResult, ttl_seconds: int = 900
+        self,
+        request_id: str,
+        result: VerificationResult,
+        ttl_seconds: int = 900,
+        audit_event: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Atomically finalize verification outcome.
 
         Returns True if transitioning from non-terminal state to result.status.
-        Returns False if the request does not exist or has already been finalized.
+        Returns False if the request does not exist or has already been finalized/cancelled.
         """
         async with self._lock:
             entry = self._requests.get(request_id)
@@ -123,14 +164,18 @@ class MemoryResultRepository:
                 return False
             data, req_expires = entry
 
-            # Terminal states that cannot be finalized twice
-            terminal_states = {"verified", "rejected", "failed", "cancelled"}
+            # Terminal states that cannot be finalized
+            terminal_states = {"verified", "rejected", "failed", "cancelled", "expired"}
             current_status = data.get("status")
             if current_status in terminal_states:
                 return False
+            if time.time() >= req_expires:
+                return False
 
-            # Atomically update request status and record final result
+            # Atomically update request status and purge sensitive auth_url
             data["status"] = result.status
+            data.pop("authorization_url", None)
+            data.pop("auth_url", None)
             self._requests[request_id] = (data, req_expires)
 
             res_expires = time.time() + ttl_seconds

@@ -1,6 +1,8 @@
 """Core framework-neutral verification service."""
 
 import datetime
+import hashlib
+import json
 from typing import Any, Dict, List, Optional
 import httpx
 from fayda_mcp.config import FaydaConfig
@@ -9,11 +11,25 @@ from fayda_mcp.exceptions import (
     AuthenticationError,
     AuthorizationError,
     ConfigurationError,
+    IdempotencyConflictError,
     InvalidStateError,
     PolicyViolationError,
+    ProviderError,
     TokenValidationError,
     VerificationNotFoundError,
 )
+
+
+def compute_request_fingerprint(purpose: str, checks: List[str], application_user_ref: str) -> str:
+    """Generate deterministic SHA-256 fingerprint of request parameters for idempotency checks."""
+    payload = {
+        "purpose": str(purpose),
+        "checks": sorted(checks),
+        "application_user_ref": str(application_user_ref or ""),
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
 from fayda_mcp.policy import VerificationPolicy
 from fayda_mcp.schemas import (
     CancelVerificationResponse,
@@ -100,36 +116,78 @@ class FaydaVerificationService:
         """Start a verification flow, creating state, PKCE verifier, and authorization link.
 
         Idempotent: repeating the call with identical idempotency_key returns existing request.
+        Reusing an idempotency key with different parameters raises IdempotencyConflictError.
         """
-        # Validate against policy before state creation or redirect
+        # 1. Validate against policy before state creation or redirect
         self.policy.validate_request(purpose=purpose, checks=checks)
 
-        # Idempotency check
-        existing = await self.results.find_by_idempotency_key(
-            tenant_id=context.tenant_id,
-            principal_id=context.principal_id,
-            idempotency_key=idempotency_key,
+        # 2. Compute deterministic request fingerprint
+        fingerprint = compute_request_fingerprint(
+            purpose=purpose,
+            checks=checks,
+            application_user_ref=application_user_ref,
         )
-        if existing:
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expires_at = (now + datetime.timedelta(seconds=self.config.session_ttl_seconds)).isoformat()
+        request_id = f"vr_{generate_secure_token(16)}"
+
+        # 3. Reserve request through unique insert before initiating OIDC flow (state: initializing)
+        reservation_data = {
+            "request_id": request_id,
+            "tenant_id": context.tenant_id,
+            "principal_id": context.principal_id,
+            "application_user_ref": application_user_ref,
+            "idempotency_key": idempotency_key,
+            "request_fingerprint": fingerprint,
+            "purpose": purpose,
+            "checks": checks,
+            "status": "initializing",
+            "expires_at": expires_at,
+            "policy_version": self.policy.version,
+        }
+
+        reserved, existing_or_reserved = await self.results.reserve_request(
+            request_id=request_id,
+            data=reservation_data,
+            ttl_seconds=self.config.result_ttl_seconds,
+        )
+
+        if not reserved:
+            # An existing request with this idempotency key already exists
+            existing_fp = existing_or_reserved.get("request_fingerprint")
+            if existing_fp and existing_fp != fingerprint:
+                raise IdempotencyConflictError(
+                    f"Idempotency key '{idempotency_key}' has already been used with different parameters"
+                )
+
+            # Briefly retain sensitive authorization URL only while pending
+            auth_url = ""
+            if existing_or_reserved.get("status") == "pending":
+                auth_url = existing_or_reserved.get("authorization_url") or existing_or_reserved.get("auth_url") or ""
+
+            exp_str = existing_or_reserved.get("expires_at")
+            if not exp_str and existing_or_reserved.get("session_expires_at"):
+                try:
+                    exp_str = datetime.datetime.fromtimestamp(
+                        float(existing_or_reserved["session_expires_at"]), tz=datetime.timezone.utc
+                    ).isoformat()
+                except Exception:
+                    exp_str = str(existing_or_reserved["session_expires_at"])
+
             return StartVerificationResponse(
-                request_id=existing["request_id"],
-                authorization_url=existing.get("authorization_url", ""),
-                expires_at=existing["expires_at"],
+                request_id=existing_or_reserved["request_id"],
+                authorization_url=auth_url,
+                expires_at=exp_str or "",
             )
 
-        # Generate cryptographic state, nonce, and PKCE challenge
+        # 4. We successfully reserved this request. Now build OIDC parameters
+        actual_req_id = existing_or_reserved.get("request_id", request_id)
         state = generate_secure_token(32)
         nonce = generate_secure_token(32)
         code_verifier, code_challenge = generate_pkce_pair()
 
-        request_id = f"vr_{generate_secure_token(16)}"
-        now = datetime.datetime.now(datetime.timezone.utc)
-        expires_at = (now + datetime.timedelta(seconds=self.config.session_ttl_seconds)).isoformat()
-
-        # Resolve required scopes and claims for requested checks
         scopes, claims_param = self.policy.resolve_scopes_and_claims(checks)
-
-        # Build Fayda eSignet authorization URL
         auth_url = build_authorization_url(
             config=self.config,
             state=state,
@@ -139,9 +197,9 @@ class FaydaVerificationService:
             claims=claims_param,
         )
 
-        # Store short-lived session in SessionStore bound to caller context
+        # 5. Persist short-lived session in Redis / SessionStore
         session_data = {
-            "request_id": request_id,
+            "request_id": actual_req_id,
             "tenant_id": context.tenant_id,
             "principal_id": context.principal_id,
             "application_user_ref": application_user_ref,
@@ -152,11 +210,19 @@ class FaydaVerificationService:
             "expires_at": expires_at,
             "browser_binding": context.browser_binding,
         }
-        await self.sessions.save_session(state, session_data, ttl_seconds=self.config.session_ttl_seconds)
 
-        # Record durable request
-        request_record = {
-            "request_id": request_id,
+        try:
+            await self.sessions.save_session(
+                state, session_data, ttl_seconds=self.config.session_ttl_seconds
+            )
+        except Exception as e:
+            # Compensate failed Redis writes by transitioning DB status to failed
+            await self.results.update_status(actual_req_id, "failed")
+            raise ProviderError(f"Failed to persist verification session in Redis: {e}")
+
+        # 6. Redis write succeeded -> transition initializing -> pending and store auth_url
+        pending_record = {
+            "request_id": actual_req_id,
             "tenant_id": context.tenant_id,
             "principal_id": context.principal_id,
             "application_user_ref": application_user_ref,
@@ -165,18 +231,21 @@ class FaydaVerificationService:
             "status": "pending",
             "expires_at": expires_at,
             "idempotency_key": idempotency_key,
+            "request_fingerprint": fingerprint,
             "authorization_url": auth_url,
         }
-        await self.results.save_request(request_id, request_record, ttl_seconds=self.config.result_ttl_seconds)
+        await self.results.save_request(
+            actual_req_id, pending_record, ttl_seconds=self.config.result_ttl_seconds
+        )
 
         if self.audit:
             await self.audit.record_event(
                 "verification_started",
-                {"request_id": request_id, "tenant_id": context.tenant_id, "purpose": purpose},
+                {"request_id": actual_req_id, "tenant_id": context.tenant_id, "purpose": purpose},
             )
 
         return StartVerificationResponse(
-            request_id=request_id,
+            request_id=actual_req_id,
             authorization_url=auth_url,
             expires_at=expires_at,
         )
@@ -248,7 +317,16 @@ class FaydaVerificationService:
 
         self._authorize_caller(record, context)
 
+        current_status = record.get("status", "pending")
+        if current_status in ("verified", "rejected", "failed"):
+            raise InvalidStateError("Cannot cancel completed verification")
+
         await self.results.update_status(request_id, "cancelled")
+        if self.audit:
+            await self.audit.record_event(
+                "verification_cancelled",
+                {"request_id": request_id, "tenant_id": context.tenant_id},
+            )
         return CancelVerificationResponse(request_id=request_id, status="cancelled")
 
     async def complete_verification(
@@ -266,12 +344,26 @@ class FaydaVerificationService:
         request_id = session_data["request_id"]
         checks = session_data.get("checks", ["identity_verified"])
 
-        # 2. Browser binding check
+        # 2. Verify request exists and is not cancelled or expired
+        record = await self.results.get_request(request_id)
+        if not record:
+            raise VerificationNotFoundError(f"Verification request '{request_id}' not found")
+
+        req_status = record.get("status", "pending")
+        if req_status in ("cancelled", "expired"):
+            raise InvalidStateError(f"Cannot complete verification: request is {req_status}")
+        if req_status in ("verified", "rejected", "failed"):
+            raise InvalidStateError("Verification request has already been finalized")
+
+        # 3. Transition to processing state
+        await self.results.update_status(request_id, "processing")
+
+        # 4. Browser binding check
         expected_binding = session_data.get("browser_binding")
         if expected_binding and browser_binding != expected_binding:
             raise InvalidStateError("Browser session binding mismatch")
 
-        # 3. Perform code exchange if client key is configured
+        # 5. Perform code exchange if client key is configured
         private_key = await self._get_private_key()
         if private_key:
             # Sign client assertion
@@ -347,19 +439,25 @@ class FaydaVerificationService:
             policy_version=self.policy.version,
         )
 
+        audit_payload = {
+            "event_type": "verification_completed",
+            "metadata": {"status": outcome_status},
+        }
+
         # Atomically finalize to ensure concurrent callbacks cannot finalize twice
         finalized = await self.results.finalize_result(
             request_id=request_id,
             result=result,
             ttl_seconds=self.config.result_ttl_seconds,
+            audit_event=audit_payload,
         )
         if not finalized:
-            raise InvalidStateError("Verification request has already been finalized")
+            raise InvalidStateError("Verification request has already been finalized or cancelled")
 
         if self.audit:
             await self.audit.record_event(
                 "verification_completed",
-                {"request_id": request_id, "status": "verified"},
+                {"request_id": request_id, "status": outcome_status},
             )
 
         return result

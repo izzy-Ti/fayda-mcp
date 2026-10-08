@@ -1,6 +1,6 @@
 # Fayda MCP Python Library (`fayda-mcp`)
 
-[![PyPI version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://pypi.org/project/fayda-mcp/)
+[![PyPI version](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://pypi.org/project/fayda-mcp/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An importable, headless Python library providing Model Context Protocol (MCP) tools and verification services for Ethiopian National ID (Fayda eSignet).

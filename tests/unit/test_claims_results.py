@@ -235,6 +235,7 @@ class TestMcpResultPrivacy:
             "request_id",
             "status",
             "checks",
+            "reasons",
             "verified_at",
             "expires_at",
             "evidence_ref",

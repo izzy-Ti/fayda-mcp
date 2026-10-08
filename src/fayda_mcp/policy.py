@@ -53,6 +53,15 @@ class VerificationPolicy(BaseModel):
         default_factory=dict,
         description="Per-purpose allowed age thresholds (range tuple or explicit list)",
     )
+    # Required vs optional checks specification (P4)
+    optional_checks: List[str] = Field(
+        default_factory=list,
+        description="List of checks considered optional by default in this policy",
+    )
+    required_checks: Optional[List[str]] = Field(
+        default=None,
+        description="Explicit list of required checks; if None, all requested checks not in optional_checks are required",
+    )
 
     @model_validator(mode="after")
     def populate_purpose_allowlist(self) -> "VerificationPolicy":
@@ -66,6 +75,25 @@ class VerificationPolicy(BaseModel):
     def get_registry(self) -> PredicateRegistry:
         """Return the active predicate registry."""
         return self.registry or DEFAULT_PREDICATE_REGISTRY
+
+    def partition_required_and_optional(
+        self,
+        resolved_checks: Sequence[str],
+        request_optional: Optional[Sequence[str]] = None,
+    ) -> Tuple[List[str], List[str]]:
+        """Partition resolved checks into (required_checks, optional_checks)."""
+        opt_set = set(self.optional_checks)
+        if request_optional:
+            opt_set.update(request_optional)
+
+        if self.required_checks is not None:
+            req_list = [c for c in resolved_checks if c in self.required_checks]
+            opt_list = [c for c in resolved_checks if c not in req_list]
+            return req_list, opt_list
+
+        req_list = [c for c in resolved_checks if c not in opt_set]
+        opt_list = [c for c in resolved_checks if c in opt_set]
+        return req_list, opt_list
 
     def validate_request(
         self,

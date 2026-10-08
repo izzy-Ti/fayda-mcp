@@ -117,14 +117,34 @@ class FaydaVerificationService:
         checks: Sequence[Union[str, AgeThresholdRule]],
         application_user_ref: str,
         idempotency_key: str,
+        optional_checks: Optional[Sequence[Union[str, AgeThresholdRule]]] = None,
     ) -> StartVerificationResponse:
         """Start a verification flow, creating state, PKCE verifier, and authorization link.
 
         Idempotent: repeating the call with identical idempotency_key returns existing request.
         Reusing an idempotency key with different parameters raises IdempotencyConflictError.
         """
+        # Separate any checks prefixed with 'optional:' or provided via optional_checks
+        cleaned_checks: List[Union[str, AgeThresholdRule]] = []
+        req_optional: List[str] = []
+        if optional_checks:
+            req_optional.extend(
+                [c.check_name if isinstance(c, AgeThresholdRule) else str(c) for c in optional_checks]
+            )
+
+        for c in checks:
+            if isinstance(c, str) and c.startswith("optional:"):
+                clean_name = c[len("optional:"):]
+                cleaned_checks.append(clean_name)
+                req_optional.append(clean_name)
+            else:
+                cleaned_checks.append(c)
+
         # 1. Validate against policy before state creation or redirect
-        resolved_checks = self.policy.validate_request(purpose=purpose, checks=checks)
+        resolved_checks = self.policy.validate_request(purpose=purpose, checks=cleaned_checks)
+        required_list, optional_list = self.policy.partition_required_and_optional(
+            resolved_checks, req_optional
+        )
 
         # 2. Compute deterministic request fingerprint
         fingerprint = compute_request_fingerprint(
@@ -147,6 +167,8 @@ class FaydaVerificationService:
             "request_fingerprint": fingerprint,
             "purpose": purpose,
             "checks": resolved_checks,
+            "required_checks": required_list,
+            "optional_checks": optional_list,
             "status": "initializing",
             "expires_at": expires_at,
             "policy_version": self.policy.version,
@@ -222,6 +244,8 @@ class FaydaVerificationService:
             "code_verifier": code_verifier,
             "purpose": purpose,
             "checks": resolved_checks,
+            "required_checks": required_list,
+            "optional_checks": optional_list,
             "expires_at": expires_at,
             "browser_binding": context.browser_binding,
         }
@@ -243,6 +267,8 @@ class FaydaVerificationService:
             "application_user_ref": application_user_ref,
             "purpose": purpose,
             "checks": resolved_checks,
+            "required_checks": required_list,
+            "optional_checks": optional_list,
             "status": "pending",
             "expires_at": expires_at,
             "idempotency_key": idempotency_key,
@@ -462,36 +488,84 @@ class FaydaVerificationService:
                 source_calendar=source_cal,
                 preferred_locales=locales,
             )
+            from fayda_mcp.predicates import DEFAULT_PREDICATE_REGISTRY, PredicateContext
+
             eval_tz = getattr(self.policy, "evaluation_timezone", "Africa/Addis_Ababa")
             feb29_rule = getattr(self.policy, "february_29_anniversary", "march_1")
-            active_registry = self.policy.get_registry() if hasattr(self.policy, "get_registry") else None
-            evaluated = evaluate_checks(
-                normalized,
-                checks,
+            active_registry = (
+                self.policy.get_registry()
+                if hasattr(self.policy, "get_registry")
+                else DEFAULT_PREDICATE_REGISTRY
+            )
+            pred_ctx = PredicateContext(
+                as_of=None,
                 timezone_name=eval_tz,
                 february_29_anniversary=feb29_rule,
-                registry=active_registry,
+            )
+            evaluated_outcomes, evaluated_reasons = active_registry.evaluate_all_with_reasons(
+                normalized,
+                checks,
+                pred_ctx,
             )
         else:
             raise ConfigurationError(
                 "A Fayda signing key is required for verification."
             )
 
-        # Determine outcome status based on check results
-        has_failure = any(v is False for v in evaluated.values())
-        if has_failure:
+        # Distinguish required and optional checks (P4)
+        optional_set = set(session_data.get("optional_checks") or [])
+        policy_req = getattr(self.policy, "required_checks", None)
+        if "required_checks" in session_data:
+            required_set = set(session_data["required_checks"])
+        elif policy_req is not None:
+            required_set = set(policy_req)
+        else:
+            required_set = {c for c in checks if c not in optional_set}
+
+        # Build checks dict (booleans and null) and safe reasons map
+        result_checks: Dict[str, Any] = {}
+        result_reasons: Dict[str, str] = {}
+
+        has_rejection = False
+        missing_required = False
+
+        for c in checks:
+            val = evaluated_outcomes.get(c)
+            if val is True:
+                result_checks[c] = True
+            elif val is False:
+                result_checks[c] = False
+                has_rejection = True
+            else:
+                result_checks[c] = None
+                reason_code = evaluated_reasons.get(c, "provider_claim_unavailable")
+                result_reasons[c] = reason_code
+                if c in required_set:
+                    missing_required = True
+
+        # Determine outcome status
+        if has_rejection:
             outcome_status = "rejected"
-        elif any(v is True for v in evaluated.values()):
+        elif missing_required:
+            outcome_status = "incomplete"
+        elif all(result_checks.get(c) is True for c in required_set):
             outcome_status = "verified"
         else:
-            outcome_status = "failed"
+            outcome_status = "incomplete"
 
-        now_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now = datetime.datetime.now(datetime.timezone.utc)
+        now_str = now.isoformat()
+        expires_at = (
+            record.get("expires_at")
+            or (now + datetime.timedelta(seconds=self.config.result_ttl_seconds)).isoformat()
+        )
         result = VerificationResult(
             request_id=request_id,
             status=outcome_status,
-            checks=evaluated,
+            checks=result_checks,
+            reasons=result_reasons,
             verified_at=now_str,
+            expires_at=expires_at,
             evidence_ref=f"ev_{request_id}",
             policy_version=self.policy.version,
         )

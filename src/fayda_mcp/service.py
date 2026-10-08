@@ -460,11 +460,13 @@ class FaydaVerificationService:
             )
             eval_tz = getattr(self.policy, "evaluation_timezone", "Africa/Addis_Ababa")
             feb29_rule = getattr(self.policy, "february_29_anniversary", "march_1")
+            active_registry = self.policy.get_registry() if hasattr(self.policy, "get_registry") else None
             evaluated = evaluate_checks(
                 normalized,
                 checks,
                 timezone_name=eval_tz,
                 february_29_anniversary=feb29_rule,
+                registry=active_registry,
             )
         else:
             raise ConfigurationError(

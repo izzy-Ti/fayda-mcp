@@ -83,8 +83,11 @@ def evaluate_checks(
     as_of: Optional[date] = None,
     timezone_name: str = "Africa/Addis_Ababa",
     february_29_anniversary: str = "march_1",
+    registry: Optional[Any] = None,
 ) -> Dict[str, CheckOutcome]:
-    """Evaluate requested checks against normalized Fayda claims.
+    """Evaluate requested checks against normalized Fayda claims using the shared predicate registry.
+
+    Ensures policy acceptance and evaluation cannot diverge.
 
     Crucial requirement: Distinguishes 'unavailable' from False.
     - Missing or unparseable DOB yields 'unavailable' (never a fabricated False or True).
@@ -97,57 +100,18 @@ def evaluate_checks(
         as_of: Optional target date for age calculations (default: today in host timezone).
         timezone_name: Host evaluation timezone (default: Africa/Addis_Ababa).
         february_29_anniversary: Leap-day anniversary policy ('march_1' or 'february_28').
+        registry: Optional custom predicate registry (defaults to shared DEFAULT_PREDICATE_REGISTRY).
 
     Returns:
         Dict mapping check name to True, False, or 'unavailable'.
     """
-    results: Dict[str, CheckOutcome] = {}
+    from fayda_mcp.predicates import DEFAULT_PREDICATE_REGISTRY, PredicateContext
 
-    for check in requested_checks:
-        if check == "identity_verified":
-            sub = claims.get("sub")
-            if sub and str(sub).strip():
-                results[check] = True
-            else:
-                results[check] = "unavailable"
+    reg = registry or DEFAULT_PREDICATE_REGISTRY
+    context = PredicateContext(
+        as_of=as_of,
+        timezone_name=timezone_name,
+        february_29_anniversary=february_29_anniversary,
+    )
+    return reg.evaluate_all(claims, requested_checks, context)
 
-        elif check == "age_over_18":
-            raw_dob = claims.get("birthdate")
-            age = (
-                calculate_age(
-                    raw_dob,
-                    as_of=as_of,
-                    timezone_name=timezone_name,
-                    february_29_anniversary=february_29_anniversary,
-                )
-                if raw_dob
-                else None
-            )
-            if age is None:
-                # Missing, partial, or invalid birthdate returns unavailable
-                results[check] = "unavailable"
-            else:
-                results[check] = age >= 18
-
-        elif check == "age_over_21":
-            raw_dob = claims.get("birthdate")
-            age = (
-                calculate_age(
-                    raw_dob,
-                    as_of=as_of,
-                    timezone_name=timezone_name,
-                    february_29_anniversary=february_29_anniversary,
-                )
-                if raw_dob
-                else None
-            )
-            if age is None:
-                results[check] = "unavailable"
-            else:
-                results[check] = age >= 21
-
-        else:
-            # Any unmapped or unavailable check returns 'unavailable'
-            results[check] = "unavailable"
-
-    return results

@@ -24,6 +24,11 @@ from fayda_mcp.exceptions import (
     VerificationNotFoundError,
 )
 from fayda_mcp.policy import VerificationPolicy
+from fayda_mcp.predicates import (
+    DEFAULT_PREDICATE_REGISTRY,
+    PredicateDefinition,
+    PredicateRegistry,
+)
 from fayda_mcp.schemas import (
     CancelVerificationResponse,
     StartVerificationRequest,
@@ -54,6 +59,9 @@ __all__ = [
     "TokenValidationError",
     "VerificationNotFoundError",
     "VerificationPolicy",
+    "PredicateRegistry",
+    "PredicateDefinition",
+    "DEFAULT_PREDICATE_REGISTRY",
     "StartVerificationRequest",
     "StartVerificationResponse",
     "VerificationStatusResponse",

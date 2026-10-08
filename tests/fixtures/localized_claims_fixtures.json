@@ -1,0 +1,68 @@
+{
+  "regional_language_fixtures": [
+    {
+      "language": "am",
+      "canonical_bcp47": "am",
+      "provider_codes": ["amh", "am-ET"],
+      "name_unicode": "አበበ ቢቂላ",
+      "payload_dict": {"@value": "አበበ ቢቂላ", "@language": "amh"},
+      "localized_key": "name#amh"
+    },
+    {
+      "language": "om",
+      "canonical_bcp47": "om",
+      "provider_codes": ["orm", "oro", "om-Latn-ET"],
+      "name_unicode": "Caaltuu Gurmuu",
+      "payload_dict": {"@value": "Caaltuu Gurmuu", "@language": "orm"},
+      "localized_key": "name#om-Latn-ET"
+    },
+    {
+      "language": "ti",
+      "canonical_bcp47": "ti",
+      "provider_codes": ["tir", "tig", "ti-ET", "ti-ER"],
+      "name_unicode": "ኣብርሃም ዘርኣይ",
+      "payload_dict": {"@value": "ኣብርሃም ዘርኣይ", "@language": "tir"},
+      "localized_key": "name#ti"
+    },
+    {
+      "language": "so",
+      "canonical_bcp47": "so",
+      "provider_codes": ["som", "so-ET"],
+      "name_unicode": "Faarax Maxamed",
+      "payload_dict": {"@value": "Faarax Maxamed", "@language": "som"},
+      "localized_key": "name#so"
+    },
+    {
+      "language": "sid",
+      "canonical_bcp47": "sid",
+      "provider_codes": ["sid", "sid-ET"],
+      "name_unicode": "Desta Geda",
+      "payload_dict": {"@value": "Desta Geda", "@language": "sid"},
+      "localized_key": "name#sid"
+    },
+    {
+      "language": "wal",
+      "canonical_bcp47": "wal",
+      "provider_codes": ["wal", "wol", "wal-ET"],
+      "name_unicode": "Ayele Woldie",
+      "payload_dict": {"@value": "Ayele Woldie", "@language": "wol"},
+      "localized_key": "name#wal"
+    },
+    {
+      "language": "en",
+      "canonical_bcp47": "en",
+      "provider_codes": ["eng", "en-US", "en-GB"],
+      "name_unicode": "Abebe Bikila",
+      "payload_dict": {"@value": "Abebe Bikila", "@language": "en-US"},
+      "localized_key": "name#en-US"
+    }
+  ],
+  "malformed_payloads": [
+    {"name": {"@value": null, "@language": "en"}},
+    {"name": {"@value": 12345, "@language": "en"}},
+    {"name": {"@value": {"nested": "object"}, "@language": "en"}},
+    {"name": {"@value": "", "@language": "en"}},
+    {"name": null},
+    {"name": 45678}
+  ]
+}

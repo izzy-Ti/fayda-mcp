@@ -198,10 +198,10 @@ class TestRegionalLanguageSelection:
         assert normalize_language_tag("sid") == "sid"
         assert normalize_language_tag("wal") == "wal"
         assert normalize_language_tag("wol") == "wal"
-        # BCP 47 subtags
-        assert normalize_language_tag("am-ET") == "am"
-        assert normalize_language_tag("en-US") == "en"
-        assert normalize_language_tag("om-et") == "om"
+        # BCP 47 subtags preserved
+        assert normalize_language_tag("am-ET") == "am-ET"
+        assert normalize_language_tag("en-US") == "en-US"
+        assert normalize_language_tag("om-et") == "om-ET"
 
     def test_preserve_unicode_and_no_transliteration(self) -> None:
         """Original Unicode text in Ethiopic or Latin script must be preserved exactly."""

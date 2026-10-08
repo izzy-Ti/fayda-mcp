@@ -8,7 +8,7 @@ import argparse
 import asyncio
 import os
 import sys
-from typing import List, Optional
+from typing import Any, List, Optional
 
 
 def load_env_if_requested(env_file: Optional[str]) -> None:
@@ -147,6 +147,45 @@ def handle_check_config(args: argparse.Namespace) -> int:
         return 1
 
 
+def _run_coro(coro: Any) -> Any:
+    """Run an async coroutine safely even if an event loop is already running."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
+def handle_diagnose(args: argparse.Namespace) -> int:
+    """Run diagnostic checks against configuration, provider endpoints, and storage."""
+    load_env_if_requested(args.env_file)
+    timeout = getattr(args, "timeout", 5.0) or 5.0
+
+    try:
+        from fayda_mcp.config import FaydaConfig
+        from fayda_mcp.diagnostics import run_diagnostics
+
+        cfg = FaydaConfig.from_env()
+
+        report = _run_coro(run_diagnostics(config=cfg, timeout_seconds=timeout))
+        print(f"Diagnostic Status: {report['status']}")
+        for check_name, check_data in report.get("checks", {}).items():
+            st = check_data.get("status", "unknown")
+            print(f"  [{check_name}] status={st}")
+        for note in report.get("notes", []):
+            print(f"  Note: {note}")
+        return 0 if report["status"] in ("ready", "configured") else 1
+    except Exception as e:
+        sys.stderr.write(f"Diagnostic error: {e}\n")
+        return 1
+
+
+
 def handle_run(args: argparse.Namespace) -> int:
     """Launch Fayda MCP server."""
     load_env_if_requested(args.env_file)
@@ -215,6 +254,11 @@ def create_parser() -> argparse.ArgumentParser:
     check_p = subparsers.add_parser("check-config", help="Verify and display redacted configuration")
     check_p.add_argument("--env-file", help="Path to .env file to load")
 
+    # diagnose
+    diag_p = subparsers.add_parser("diagnose", help="Execute diagnostic connectivity checks with timeouts")
+    diag_p.add_argument("--timeout", type=float, default=5.0, help="HTTP connection timeout in seconds (default: 5.0)")
+    diag_p.add_argument("--env-file", help="Path to .env file to load")
+
     # run
     run_p = subparsers.add_parser("run", help="Run the Fayda MCP server")
     run_p.add_argument(
@@ -245,11 +289,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return handle_cleanup(args)
     elif args.subcommand == "check-config":
         return handle_check_config(args)
+    elif args.subcommand == "diagnose":
+        return handle_diagnose(args)
     elif args.subcommand == "run":
         return handle_run(args)
     else:
         parser.print_help()
         return 1
+
 
 
 if __name__ == "__main__":

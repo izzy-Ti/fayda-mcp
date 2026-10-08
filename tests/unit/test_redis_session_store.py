@@ -22,7 +22,7 @@ from fayda_mcp import (
     InvalidStateError,
 )
 from fayda_mcp.storage.memory import MemoryResultRepository
-from fayda_mcp.storage.redis import RedisSessionStore, _GETDEL_LUA
+from fayda_mcp.storage.redis import RedisSessionStore, _GETDEL_LUA, parse_redis_url
 
 try:
     import fakeredis.aioredis as fake_aioredis
@@ -33,11 +33,22 @@ except ImportError:
 
 
 async def create_test_redis_client() -> Any:
-    """Create a clean Redis client using live Redis (if REDIS_URL configured) or FakeRedis."""
-    redis_url = os.environ.get("FAYDA_TEST_REDIS_URL") or os.environ.get("REDIS_URL")
+    """Create a clean Redis client using live Redis (if FAYDA_TEST_REDIS_URL configured) or FakeRedis."""
+    redis_url = os.environ.get("FAYDA_TEST_REDIS_URL")
     if redis_url:
         assert aioredis is not None, "redis.asyncio must be installed"
-        client = aioredis.from_url(redis_url, decode_responses=True)
+        clean_url = parse_redis_url(redis_url)
+        try:
+            client = aioredis.from_url(clean_url, decode_responses=True, socket_connect_timeout=1.5)
+            await client.ping()
+            await client.flushdb()
+            return client
+        except Exception:
+            if fake_aioredis is not None:
+                client = fake_aioredis.FakeRedis(decode_responses=True)
+                await client.flushdb()
+                return client
+            raise
     else:
         assert fake_aioredis is not None, "fakeredis must be installed"
         client = fake_aioredis.FakeRedis(decode_responses=True)

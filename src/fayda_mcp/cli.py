@@ -1,14 +1,17 @@
 """Command-line interface for Fayda MCP.
 
 Provides commands for schema migrations, configuration verification,
-and launching MCP servers with stdio or HTTP transports.
+retention cleanup, diagnostic connectivity probes, and launching MCP servers
+with stdio or combined HTTP transports.
 """
 
 import argparse
 import asyncio
+import importlib
 import os
 import sys
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
+import urllib.parse
 
 
 def load_env_if_requested(env_file: Optional[str]) -> None:
@@ -25,7 +28,6 @@ def load_env_if_requested(env_file: Optional[str]) -> None:
             from dotenv import load_dotenv
             load_dotenv(env_file, override=False)
         except ImportError:
-            # Fallback simple parser if python-dotenv is not installed
             with open(env_file, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
@@ -35,6 +37,107 @@ def load_env_if_requested(env_file: Optional[str]) -> None:
                         v = v.strip().strip("'\"")
                         if k not in os.environ:
                             os.environ[k] = v
+
+
+def validate_port(port: int) -> int:
+    """Validate that port number is within the valid TCP range 1-65535."""
+    if not (1 <= port <= 65535):
+        raise ValueError(f"Invalid port: {port}. Port must be between 1 and 65535.")
+    return port
+
+
+def validate_callback_uri(uri: str) -> str:
+    """Validate that callback URI is an absolute HTTP or HTTPS URL."""
+    parsed = urllib.parse.urlparse(uri)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(
+            f"Invalid callback URI '{uri}'. Must be an absolute http or https URL."
+        )
+    return uri
+
+
+def init_storage(
+    storage_mode: str,
+    redis_url: Optional[str] = None,
+    database_url: Optional[str] = None,
+) -> Tuple[Any, Any]:
+    """Validate storage mode and initialize corresponding session and result stores."""
+    mode = (storage_mode or "memory").lower()
+    from fayda_mcp.storage.memory import MemoryResultRepository, MemorySessionStore
+
+    if mode == "memory":
+        return MemorySessionStore(), MemoryResultRepository()
+
+    elif mode == "redis":
+        r_url = redis_url or os.environ.get("REDIS_URL")
+        if not r_url:
+            raise ValueError(
+                "Redis storage mode requires --redis-url or REDIS_URL in environment."
+            )
+        try:
+            from fayda_mcp.storage.redis import RedisSessionStore
+            sessions = RedisSessionStore.from_url(r_url)
+            return sessions, MemoryResultRepository()
+        except ImportError as e:
+            raise ImportError(f"Redis dependencies missing: {e}. Install with pip install 'fayda-mcp[redis]'")
+
+    elif mode == "postgres":
+        db_url = database_url or os.environ.get("DATABASE_URL")
+        if not db_url:
+            raise ValueError(
+                "PostgreSQL storage mode requires --database-url or DATABASE_URL in environment."
+            )
+        try:
+            from fayda_mcp.storage.postgres import PostgresResultRepository
+            results = PostgresResultRepository.from_url(db_url)
+            return MemorySessionStore(), results
+        except ImportError as e:
+            raise ImportError(f"PostgreSQL dependencies missing: {e}. Install with pip install 'fayda-mcp[postgres]'")
+
+    elif mode in ("redis+postgres", "postgres+redis"):
+        r_url = redis_url or os.environ.get("REDIS_URL")
+        db_url = database_url or os.environ.get("DATABASE_URL")
+        if not r_url:
+            raise ValueError("Redis+Postgres mode requires --redis-url or REDIS_URL.")
+        if not db_url:
+            raise ValueError("Redis+Postgres mode requires --database-url or DATABASE_URL.")
+        try:
+            from fayda_mcp.storage.redis import RedisSessionStore
+            from fayda_mcp.storage.postgres import PostgresResultRepository
+            sessions = RedisSessionStore.from_url(r_url)
+            results = PostgresResultRepository.from_url(db_url)
+            return sessions, results
+        except ImportError as e:
+            raise ImportError(f"Storage dependencies missing: {e}. Install with pip install 'fayda-mcp[all]'")
+
+    else:
+        raise ValueError(
+            f"Unsupported storage mode '{storage_mode}'. Choose from: memory, redis, postgres, redis+postgres."
+        )
+
+
+def init_caller_adapter(adapter_str: Optional[str]) -> Any:
+    """Validate and instantiate host caller authorization adapter."""
+    from fayda_mcp.context import SimpleCallerAdapter
+
+    if not adapter_str or adapter_str == "default":
+        return SimpleCallerAdapter()
+    elif adapter_str == "strict":
+        return SimpleCallerAdapter(enforce_scopes=True)
+    elif ":" in adapter_str:
+        module_path, class_name = adapter_str.split(":", 1)
+        try:
+            mod = importlib.import_module(module_path)
+            cls = getattr(mod, class_name)
+            return cls()
+        except Exception as e:
+            raise ValueError(
+                f"Failed to load caller adapter '{adapter_str}': {e}"
+            )
+    else:
+        raise ValueError(
+            f"Invalid caller adapter specification '{adapter_str}'. Use 'default', 'strict', or 'module:Class'."
+        )
 
 
 def handle_migrate(args: argparse.Namespace) -> int:
@@ -132,15 +235,33 @@ def handle_check_config(args: argparse.Namespace) -> int:
     load_env_if_requested(args.env_file)
     try:
         from fayda_mcp.config import FaydaConfig
-        cfg = FaydaConfig.from_env()
+
+        cfg = FaydaConfig.from_env(dotenv_path=args.env_file)
+
+        # Validate callback URI override if provided
+        if getattr(args, "callback_uri", None):
+            validate_callback_uri(args.callback_uri)
+
+        # Validate storage mode if specified
+        storage_mode = getattr(args, "storage", "memory") or "memory"
+        init_storage(
+            storage_mode=storage_mode,
+            redis_url=getattr(args, "redis_url", None),
+            database_url=getattr(args, "database_url", None),
+        )
+
         has_key = bool(cfg.signing_key or cfg.signing_key_path)
+
+        # Output ONLY redacted, non-secret parameters
         print("Configuration validated successfully:")
         print(f"  Client ID: {cfg.client_id}")
         print(f"  Redirect URI: {cfg.redirect_uri}")
         print(f"  Authorization Endpoint: {cfg.authorization_endpoint}")
         print(f"  Token Endpoint: {cfg.token_endpoint}")
         print(f"  Userinfo Endpoint: {cfg.userinfo_endpoint}")
-        print(f"  Key configured: {'Yes (redacted)' if has_key else 'No'}")
+        print(f"  JWKS URI: {cfg.jwks_uri}")
+        print(f"  Signing Key: {'Configured (redacted)' if has_key else 'Not configured'}")
+        print(f"  Storage Mode: {storage_mode}")
         return 0
     except Exception as e:
         sys.stderr.write(f"Configuration error: {e}\n")
@@ -170,7 +291,7 @@ def handle_diagnose(args: argparse.Namespace) -> int:
         from fayda_mcp.config import FaydaConfig
         from fayda_mcp.diagnostics import run_diagnostics
 
-        cfg = FaydaConfig.from_env()
+        cfg = FaydaConfig.from_env(dotenv_path=args.env_file)
 
         report = _run_coro(run_diagnostics(config=cfg, timeout_seconds=timeout))
         print(f"Diagnostic Status: {report['status']}")
@@ -185,37 +306,88 @@ def handle_diagnose(args: argparse.Namespace) -> int:
         return 1
 
 
-
 def handle_run(args: argparse.Namespace) -> int:
     """Launch Fayda MCP server."""
     load_env_if_requested(args.env_file)
     transport = getattr(args, "transport", "stdio") or "stdio"
 
-    from fayda_mcp.config import FaydaConfig
-    from fayda_mcp.mcp.factory import create_mcp_server
-    from fayda_mcp.service import FaydaVerificationService
-    from fayda_mcp.storage.memory import MemoryResultRepository, MemorySessionStore
+    try:
+        from fayda_mcp.config import FaydaConfig
+        from fayda_mcp.mcp.factory import create_mcp_server
+        from fayda_mcp.service import FaydaVerificationService
 
-    cfg = FaydaConfig.from_env()
-    service = FaydaVerificationService(
-        config=cfg,
-        sessions=MemorySessionStore(),
-        results=MemoryResultRepository(),
-    )
-    server = create_mcp_server(service=service)
+        # 1. Validate transport
+        if transport not in ("stdio", "http"):
+            sys.stderr.write(f"Error: Unsupported transport '{transport}'. Choose 'stdio' or 'http'.\n")
+            return 1
 
-    if transport == "stdio":
-        # Under stdio transport, stdout is reserved strictly for MCP JSON-RPC protocol
-        server.run(transport="stdio")
-        return 0
-    elif transport == "http":
+        # 2. Validate port and host
+        port = validate_port(getattr(args, "port", 3000) or 3000)
         host = getattr(args, "host", "127.0.0.1") or "127.0.0.1"
-        port = getattr(args, "port", 3000) or 3000
-        server.run(transport="sse", host=host, port=port)
-        return 0
-    else:
-        sys.stderr.write(f"Unknown transport: {transport}\n")
+
+        # 3. Load and validate configuration
+        cfg = FaydaConfig.from_env(dotenv_path=args.env_file)
+        callback_override = getattr(args, "callback_uri", None)
+        if callback_override:
+            validate_callback_uri(callback_override)
+            cfg = cfg.model_copy(update={"redirect_uri": callback_override})
+        else:
+            validate_callback_uri(cfg.redirect_uri)
+
+        # 4. Validate and initialize storage stores
+        storage_mode = getattr(args, "storage", "memory") or "memory"
+        sessions, results = init_storage(
+            storage_mode=storage_mode,
+            redis_url=getattr(args, "redis_url", None),
+            database_url=getattr(args, "database_url", None),
+        )
+
+        # 5. Validate and initialize caller adapter
+        caller_adapter = init_caller_adapter(getattr(args, "caller_adapter", None))
+
+        service = FaydaVerificationService(
+            config=cfg,
+            sessions=sessions,
+            results=results,
+        )
+        server = create_mcp_server(service=service, caller_adapter=caller_adapter)
+
+        if transport == "stdio":
+            # Under stdio transport, stdout is reserved strictly for MCP JSON-RPC protocol
+            server.run(transport="stdio")
+            return 0
+        elif transport == "http":
+            # Local combined HTTP mode: hosts MCP endpoint and registered callback using the same service instance
+            try:
+                from fayda_mcp.integrations.fastapi import create_fastapi_app
+                import uvicorn
+
+                # Configure host-owned session-binding route/hook, never a static production cookie
+                def host_session_binding_hook(request: Any) -> Optional[str]:
+                    binding = request.headers.get("x-session-binding")
+                    if not binding and hasattr(request, "cookies"):
+                        binding = request.cookies.get("fayda_session_binding")
+                    return binding
+
+                app = create_fastapi_app(
+                    service=service,
+                    session_binding_hook=host_session_binding_hook,
+                    mcp_server=server,
+                    mcp_path="/mcp",
+                )
+
+                uvicorn.run(app, host=host, port=port)
+                return 0
+            except ImportError:
+                # Fallback to server SSE run if fastapi/uvicorn is not installed
+                server.run(transport="sse", host=host, port=port)
+                return 0
+
+    except Exception as e:
+        sys.stderr.write(f"Startup error: {e}\n")
         return 1
+
+    return 0
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -253,6 +425,15 @@ def create_parser() -> argparse.ArgumentParser:
     # check-config
     check_p = subparsers.add_parser("check-config", help="Verify and display redacted configuration")
     check_p.add_argument("--env-file", help="Path to .env file to load")
+    check_p.add_argument(
+        "--storage",
+        choices=["memory", "redis", "postgres", "redis+postgres"],
+        default="memory",
+        help="Storage mode to validate (default: memory)",
+    )
+    check_p.add_argument("--redis-url", help="Redis connection URL")
+    check_p.add_argument("--database-url", help="Database connection URL")
+    check_p.add_argument("--callback-uri", help="Explicit developer callback URI to validate")
 
     # diagnose
     diag_p = subparsers.add_parser("diagnose", help="Execute diagnostic connectivity checks with timeouts")
@@ -265,10 +446,24 @@ def create_parser() -> argparse.ArgumentParser:
         "--transport",
         choices=["stdio", "http"],
         default="stdio",
-        help="Transport protocol (stdio or http)",
+        help="Transport protocol: stdio or http (default: stdio)",
     )
-    run_p.add_argument("--host", default="127.0.0.1", help="Host interface for HTTP transport")
-    run_p.add_argument("--port", type=int, default=3000, help="Port for HTTP transport")
+    run_p.add_argument("--host", default="127.0.0.1", help="Host interface for HTTP transport (default: 127.0.0.1)")
+    run_p.add_argument("--port", type=int, default=3000, help="Port for HTTP transport (default: 3000)")
+    run_p.add_argument(
+        "--storage",
+        choices=["memory", "redis", "postgres", "redis+postgres"],
+        default="memory",
+        help="Session and result storage mode (default: memory)",
+    )
+    run_p.add_argument("--redis-url", help="Redis connection URL for redis storage mode")
+    run_p.add_argument("--database-url", help="PostgreSQL connection URL for postgres storage mode")
+    run_p.add_argument("--callback-uri", help="Explicit developer callback URI override")
+    run_p.add_argument(
+        "--caller-adapter",
+        default="default",
+        help="Host caller authorization adapter: default, strict, or module:Class",
+    )
     run_p.add_argument("--env-file", help="Path to .env file to load")
 
     return parser
@@ -277,7 +472,10 @@ def create_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for fayda-mcp console script."""
     parser = create_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as e:
+        return e.code if isinstance(e.code, int) else 0
 
     if not args.subcommand:
         parser.print_help()
@@ -296,7 +494,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         parser.print_help()
         return 1
-
 
 
 if __name__ == "__main__":

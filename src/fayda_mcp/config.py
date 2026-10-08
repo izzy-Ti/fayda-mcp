@@ -37,11 +37,12 @@ class FaydaConfig(BaseModel):
     @classmethod
     def from_env(cls, env_prefix: str = "FAYDA_", dotenv_path: Optional[str] = None) -> "FaydaConfig":
         """Explicit helper to load configuration from environment variables or .env file."""
-        try:
-            from dotenv import load_dotenv
-            load_dotenv(dotenv_path or ".env")
-        except ImportError:
-            pass
+        if dotenv_path:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(dotenv_path)
+            except ImportError:
+                pass
 
         def get_val(*keys: str, default: str = "") -> str:
             for k in keys:
@@ -87,17 +88,25 @@ class FaydaConfig(BaseModel):
                 jwks_uri = f"{issuer}/v1/esignet/oauth/v2/jwks"
 
         # Resolve private key
-        raw_key = get_val(f"{env_prefix}PRIVATE_KEY", "PRIVATE_KEY")
+        raw_key = get_val(
+            f"{env_prefix}PRIVATE_KEY",
+            f"{env_prefix}SIGNING_KEY",
+            "PRIVATE_KEY",
+            "SIGNING_KEY",
+        )
         signing_key_path = get_val(f"{env_prefix}SIGNING_KEY_PATH", "SIGNING_KEY_PATH", default="") or None
         signing_key: Optional[str] = None
         key_id = get_val(f"{env_prefix}KEY_ID", "KEY_ID", default="") or None
 
         if raw_key:
             from fayda_mcp.secrets.keys import parse_private_key
-            pem, parsed_kid = parse_private_key(raw_key)
-            signing_key = pem
-            if parsed_kid and not key_id:
-                key_id = parsed_kid
+            try:
+                pem, parsed_kid = parse_private_key(raw_key)
+                signing_key = pem
+                if parsed_kid and not key_id:
+                    key_id = parsed_kid
+            except Exception:
+                signing_key = raw_key
         elif signing_key_path and os.path.exists(signing_key_path):
             with open(signing_key_path, "r", encoding="utf-8") as f:
                 content = f.read().strip()

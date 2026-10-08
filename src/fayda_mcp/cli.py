@@ -148,7 +148,7 @@ def handle_migrate(args: argparse.Namespace) -> int:
     if not db_url and args.database_url_env:
         db_url = os.environ.get(args.database_url_env)
 
-    if not db_url:
+    if not db_url and not args.database_url_env:
         db_url = os.environ.get("DATABASE_MIGRATION_URL") or os.environ.get("DATABASE_URL")
 
     if not db_url:
@@ -200,7 +200,7 @@ def handle_cleanup(args: argparse.Namespace) -> int:
     if not db_url and args.database_url_env:
         db_url = os.environ.get(args.database_url_env)
 
-    if not db_url:
+    if not db_url and not args.database_url_env:
         db_url = os.environ.get("DATABASE_URL") or os.environ.get("DATABASE_MIGRATION_URL")
 
     if not db_url:

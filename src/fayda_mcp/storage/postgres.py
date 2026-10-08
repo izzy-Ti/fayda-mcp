@@ -1,6 +1,7 @@
 """PostgreSQL / Neon durable result repository and audit logger."""
 
 import asyncio
+import datetime
 import json
 import time
 import uuid
@@ -24,6 +25,56 @@ def _sql_text(statement: str) -> Any:
             "Postgres extra is not installed. Install with: pip install 'fayda-mcp[postgres]'"
         )
     return text(statement)
+
+
+def _to_dt(ts: Any) -> Optional[datetime.datetime]:
+    if ts is None:
+        return None
+    if isinstance(ts, datetime.datetime):
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=datetime.timezone.utc)
+        return ts
+    if isinstance(ts, (int, float)):
+        return datetime.datetime.fromtimestamp(float(ts), tz=datetime.timezone.utc)
+    if isinstance(ts, str):
+        try:
+            return datetime.datetime.fromisoformat(ts)
+        except Exception:
+            try:
+                return datetime.datetime.fromtimestamp(float(ts), tz=datetime.timezone.utc)
+            except Exception:
+                return None
+    return None
+
+
+def _from_dt(val: Any) -> float:
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, datetime.datetime):
+        return val.timestamp()
+    if isinstance(val, str):
+        try:
+            return float(val)
+        except ValueError:
+            try:
+                return datetime.datetime.fromisoformat(val).timestamp()
+            except Exception:
+                return 0.0
+    return 0.0
+
+
+def _to_iso(val: Any) -> Optional[str]:
+    if val is None:
+        return None
+    if isinstance(val, str):
+        return val
+    if isinstance(val, datetime.datetime):
+        return val.isoformat()
+    if isinstance(val, (int, float)):
+        return datetime.datetime.fromtimestamp(float(val), tz=datetime.timezone.utc).isoformat()
+    return str(val)
 
 
 class PostgresResultRepository:
@@ -119,9 +170,9 @@ class PostgresResultRepository:
                 purpose VARCHAR(128),
                 checks TEXT NOT NULL,
                 status VARCHAR(64) NOT NULL,
-                created_at DOUBLE PRECISION NOT NULL,
-                session_expires_at DOUBLE PRECISION NOT NULL,
-                retention_expires_at DOUBLE PRECISION NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                session_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                retention_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 policy_version VARCHAR(32),
                 auth_url TEXT,
                 CONSTRAINT uq_{self.table_prefix}req_idemp UNIQUE (tenant_id, principal_id, idempotency_key)
@@ -134,8 +185,8 @@ class PostgresResultRepository:
                 principal_id VARCHAR(128) NOT NULL,
                 status VARCHAR(64) NOT NULL,
                 checks TEXT NOT NULL,
-                verified_at VARCHAR(64),
-                result_expires_at DOUBLE PRECISION NOT NULL,
+                verified_at TIMESTAMP WITH TIME ZONE,
+                result_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 evidence_ref VARCHAR(256),
                 policy_version VARCHAR(32)
             );
@@ -147,7 +198,7 @@ class PostgresResultRepository:
                 tenant_id VARCHAR(128),
                 principal_id VARCHAR(128),
                 event_type VARCHAR(64) NOT NULL,
-                occurred_at DOUBLE PRECISION NOT NULL,
+                occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 safe_metadata TEXT NOT NULL
             );
             """,
@@ -205,9 +256,9 @@ class PostgresResultRepository:
             "purpose": purpose,
             "checks": checks_json,
             "status": status,
-            "created_at": now,
-            "session_expires_at": session_expires_at,
-            "retention_expires_at": retention_expires_at,
+            "created_at": _to_dt(now),
+            "session_expires_at": _to_dt(session_expires_at),
+            "retention_expires_at": _to_dt(retention_expires_at),
             "policy_version": policy_version,
             "auth_url": auth_url,
         }
@@ -265,9 +316,9 @@ class PostgresResultRepository:
             "purpose": purpose,
             "checks": checks_json,
             "status": status,
-            "created_at": now,
-            "session_expires_at": session_expires_at,
-            "retention_expires_at": retention_expires_at,
+            "created_at": _to_dt(now),
+            "session_expires_at": _to_dt(session_expires_at),
+            "retention_expires_at": _to_dt(retention_expires_at),
             "policy_version": policy_version,
             "auth_url": auth_url,
         }
@@ -311,12 +362,19 @@ class PostgresResultRepository:
                 return None
 
             now = time.time()
-            if now >= float(row["retention_expires_at"]):
+            retention_exp = _from_dt(row["retention_expires_at"])
+            if now >= retention_exp:
                 return None
 
-            try:
-                checks = json.loads(row["checks"])
-            except Exception:
+            checks_raw = row["checks"]
+            if isinstance(checks_raw, (list, dict)):
+                checks = checks_raw
+            elif isinstance(checks_raw, str):
+                try:
+                    checks = json.loads(checks_raw)
+                except Exception:
+                    checks = []
+            else:
                 checks = []
 
             return {
@@ -329,9 +387,9 @@ class PostgresResultRepository:
                 "purpose": row["purpose"],
                 "checks": checks,
                 "status": row["status"],
-                "created_at": row["created_at"],
-                "session_expires_at": row["session_expires_at"],
-                "retention_expires_at": row["retention_expires_at"],
+                "created_at": _from_dt(row["created_at"]),
+                "session_expires_at": _from_dt(row["session_expires_at"]),
+                "retention_expires_at": retention_exp,
                 "policy_version": row["policy_version"],
                 "authorization_url": row["auth_url"],
             }
@@ -364,12 +422,19 @@ class PostgresResultRepository:
                 return None
 
             now = time.time()
-            if now >= float(row["retention_expires_at"]):
+            retention_exp = _from_dt(row["retention_expires_at"])
+            if now >= retention_exp:
                 return None
 
-            try:
-                checks = json.loads(row["checks"])
-            except Exception:
+            checks_raw = row["checks"]
+            if isinstance(checks_raw, (list, dict)):
+                checks = checks_raw
+            elif isinstance(checks_raw, str):
+                try:
+                    checks = json.loads(checks_raw)
+                except Exception:
+                    checks = []
+            else:
                 checks = []
 
             return {
@@ -382,9 +447,9 @@ class PostgresResultRepository:
                 "purpose": row["purpose"],
                 "checks": checks,
                 "status": row["status"],
-                "created_at": row["created_at"],
-                "session_expires_at": row["session_expires_at"],
-                "retention_expires_at": row["retention_expires_at"],
+                "created_at": _from_dt(row["created_at"]),
+                "session_expires_at": _from_dt(row["session_expires_at"]),
+                "retention_expires_at": retention_exp,
                 "policy_version": row["policy_version"],
                 "authorization_url": row["auth_url"],
             }
@@ -464,8 +529,8 @@ class PostgresResultRepository:
                         "request_id": request_id,
                         "status": result.status,
                         "checks": checks_json,
-                        "verified_at": result.verified_at,
-                        "result_expires_at": result_expires_at,
+                        "verified_at": _to_dt(result.verified_at),
+                        "result_expires_at": _to_dt(result_expires_at),
                         "evidence_ref": result.evidence_ref,
                         "policy_version": result.policy_version or "v1",
                     }
@@ -493,7 +558,7 @@ class PostgresResultRepository:
                                 "event_id": event_id,
                                 "request_id": request_id,
                                 "event_type": event_type,
-                                "occurred_at": now,
+                                "occurred_at": _to_dt(now),
                                 "safe_metadata": safe_meta,
                             },
                         )
@@ -540,8 +605,8 @@ class PostgresResultRepository:
                     "request_id": request_id,
                     "status": result.status,
                     "checks": checks_json,
-                    "verified_at": result.verified_at,
-                    "result_expires_at": result_expires_at,
+                    "verified_at": _to_dt(result.verified_at),
+                    "result_expires_at": _to_dt(result_expires_at),
                     "evidence_ref": result.evidence_ref,
                     "policy_version": result.policy_version or "v1",
                 }
@@ -562,33 +627,40 @@ class PostgresResultRepository:
                 return None
 
             now = time.time()
-            if now >= float(row["result_expires_at"]):
+            res_exp = _from_dt(row["result_expires_at"])
+            if now >= res_exp:
                 return None
 
-            try:
-                checks = json.loads(row["checks"])
-            except Exception:
+            checks_raw = row["checks"]
+            if isinstance(checks_raw, (dict, list)):
+                checks = checks_raw
+            elif isinstance(checks_raw, str):
+                try:
+                    checks = json.loads(checks_raw)
+                except Exception:
+                    checks = {}
+            else:
                 checks = {}
 
             return VerificationResult(
                 request_id=row["request_id"],
                 status=row["status"],
                 checks=checks,
-                verified_at=row["verified_at"],
+                verified_at=_to_iso(row.get("verified_at")),
                 evidence_ref=row.get("evidence_ref"),
                 policy_version=row.get("policy_version"),
             )
 
     async def cleanup(self) -> int:
         """Purge expired requests and results. Returns total count of deleted records."""
-        now = time.time()
+        now_dt = _to_dt(time.time())
         sql_del_reqs = f"DELETE FROM {self.requests_table} WHERE retention_expires_at <= :now"
         sql_del_results = f"DELETE FROM {self.results_table} WHERE result_expires_at <= :now"
 
         async with self.session_factory() as session:
             async with session.begin():
-                r1 = await session.execute(_sql_text(sql_del_reqs), {"now": now})
-                r2 = await session.execute(_sql_text(sql_del_results), {"now": now})
+                r1 = await session.execute(_sql_text(sql_del_reqs), {"now": now_dt})
+                r2 = await session.execute(_sql_text(sql_del_results), {"now": now_dt})
                 return (r1.rowcount or 0) + (r2.rowcount or 0)
 
     async def close(self) -> None:
@@ -611,7 +683,7 @@ class PostgresAuditLogger:
     async def record_event(self, event_type: str, safe_metadata: Dict[str, Any]) -> None:
         """Append safe audit log record."""
         event_id = str(uuid.uuid4())
-        occurred_at = time.time()
+        now = time.time()
         request_id = safe_metadata.get("request_id")
         tenant_id = safe_metadata.get("tenant_id") or "default"
         principal_id = safe_metadata.get("principal_id") or "default"
@@ -631,7 +703,7 @@ class PostgresAuditLogger:
             "tenant_id": tenant_id,
             "principal_id": principal_id,
             "event_type": event_type,
-            "occurred_at": occurred_at,
+            "occurred_at": _to_dt(now),
             "safe_metadata": metadata_json,
         }
 
@@ -661,10 +733,17 @@ class PostgresAuditLogger:
             result = await session.execute(_sql_text(sql), params)
             events = []
             for row in result.mappings().all():
-                try:
-                    metadata = json.loads(row["safe_metadata"])
-                except Exception:
+                meta_raw = row["safe_metadata"]
+                if isinstance(meta_raw, dict):
+                    metadata = meta_raw
+                elif isinstance(meta_raw, str):
+                    try:
+                        metadata = json.loads(meta_raw)
+                    except Exception:
+                        metadata = {}
+                else:
                     metadata = {}
+
                 events.append(
                     {
                         "event_id": row["event_id"],
@@ -673,7 +752,12 @@ class PostgresAuditLogger:
                         "principal_id": row["principal_id"],
                         "event_type": row["event_type"],
                         "metadata": metadata,
-                        "timestamp": row["occurred_at"],
+                        "timestamp": _from_dt(row["occurred_at"]),
                     }
                 )
             return events
+
+    async def close(self) -> None:
+        """Lifecycle close (no-op if sharing session factory)."""
+        pass
+

@@ -133,6 +133,109 @@ def _age_evaluator(
     return PredicateEvaluation(outcome=age >= threshold, reason=None)
 
 
+@dataclass(frozen=True)
+class AgeThresholdRule:
+    """Typed rule for age verification thresholds.
+
+    Naming convention:
+    - 'age_over_18' is maintained as the existing backwards-compatibility alias for age >= 18.
+    - 'age_at_least' is the preferred prefix for new structured rules (e.g. age_at_least_21).
+    - Both evaluate whether calculated age is at least the threshold.
+    """
+
+    threshold: int
+    rule_type: Literal["age_at_least", "age_over"] = "age_at_least"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.threshold, bool) or not isinstance(self.threshold, int):
+            raise PolicyViolationError(f"Age threshold must be an integer, got: {self.threshold}")
+        if self.threshold < 1:
+            raise PolicyViolationError(f"Age threshold must be at least 1, got: {self.threshold}")
+        if self.threshold > 120:
+            raise PolicyViolationError(f"Age threshold {self.threshold} exceeds maximum allowed (120)")
+
+    @property
+    def check_name(self) -> str:
+        return f"{self.rule_type}_{self.threshold}"
+
+    def __str__(self) -> str:
+        return self.check_name
+
+
+def parse_age_check(
+    check_str: str,
+    min_age: int = 1,
+    max_age: int = 120,
+) -> Optional[ParsedPredicate]:
+    """Strictly parse an age verification check string.
+
+    Supports:
+    - Legacy alias: 'age_over_N' (e.g. 'age_over_18', compatibility alias for age >= 18)
+    - Preferred structured rule: 'age_at_least_N' (e.g. 'age_at_least_21')
+
+    Strict validation:
+    - Rejects negative thresholds (e.g., 'age_over_-5', 'age_at_least_-1')
+    - Rejects decimal thresholds (e.g., 'age_over_18.5', 'age_at_least_20.0')
+    - Rejects malformed thresholds (e.g., 'age_over_', 'age_over_abc', 'age_over_018')
+    - Rejects enormous thresholds (e.g., 'age_over_999' > max_age)
+    - Rejects thresholds below min_age (e.g., 'age_over_0' < min_age)
+    - Returns None if check_str is not an age predicate (e.g., 'identity_verified')
+    """
+    if not isinstance(check_str, str):
+        return None
+
+    if check_str.startswith("age_over_"):
+        rule_type = "age_over"
+        suffix = check_str[len("age_over_"):]
+    elif check_str.startswith("age_at_least_"):
+        rule_type = "age_at_least"
+        suffix = check_str[len("age_at_least_"):]
+    else:
+        return None
+
+    if not suffix:
+        raise PolicyViolationError(f"Malformed age threshold (empty value): '{check_str}'")
+
+    # Reject negative
+    if suffix.startswith("-") or "-" in suffix:
+        raise PolicyViolationError(f"Negative age threshold is not allowed: '{check_str}'")
+
+    # Reject decimal
+    if "." in suffix or "," in suffix:
+        raise PolicyViolationError(f"Decimal age threshold is not allowed: '{check_str}'")
+
+    # Reject non-numeric / malformed
+    if not suffix.isdigit():
+        raise PolicyViolationError(f"Malformed age threshold (non-numeric): '{check_str}'")
+
+    # Reject leading zero formatting like '018' (unless single '0')
+    if len(suffix) > 1 and suffix.startswith("0"):
+        raise PolicyViolationError(f"Malformed age threshold (leading zero): '{check_str}'")
+
+    try:
+        threshold = int(suffix)
+    except ValueError:
+        raise PolicyViolationError(f"Malformed age threshold: '{check_str}'")
+
+    # Reject below min_age
+    if threshold < min_age:
+        raise PolicyViolationError(
+            f"Age threshold {threshold} is below host minimum ({min_age}): '{check_str}'"
+        )
+
+    # Reject enormous (above max_age)
+    if threshold > max_age:
+        raise PolicyViolationError(
+            f"Enormous age threshold {threshold} exceeds host maximum ({max_age}): '{check_str}'"
+        )
+
+    return ParsedPredicate(
+        name=check_str,
+        target_claim="birthdate",
+        parameters={"threshold": threshold, "rule_type": rule_type},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Predicate Registry Implementation
 # ---------------------------------------------------------------------------
@@ -148,13 +251,40 @@ class PredicateRegistry:
         """Register a predicate definition."""
         self._predicates[predicate.name] = predicate
 
+    def ensure_age_predicate(self, name: str, threshold: int) -> PredicateDefinition:
+        """Register or return a dynamically constructed age predicate definition."""
+        if name in self._predicates:
+            return self._predicates[name]
+
+        desc = f"Citizen age is at least {threshold} years on anniversary date"
+        pred = PredicateDefinition(
+            name=name,
+            description=desc,
+            required_claims=["birthdate"],
+            required_scopes=["openid", "profile"],
+            parser=_create_age_parser(name, threshold),
+            availability_rule=_age_availability_rule,
+            evaluator=_age_evaluator,
+        )
+        self._predicates[name] = pred
+        return pred
+
     def get(self, name: str) -> Optional[PredicateDefinition]:
-        """Get registered predicate definition by name."""
-        return self._predicates.get(name)
+        """Get registered predicate definition by name, resolving dynamic age rules."""
+        if name in self._predicates:
+            return self._predicates[name]
+        try:
+            parsed = parse_age_check(name)
+            if parsed is not None:
+                threshold = int(parsed.parameters["threshold"])
+                return self.ensure_age_predicate(name, threshold)
+        except Exception:
+            pass
+        return None
 
     def is_supported(self, name: str) -> bool:
         """Check whether a check name is supported by the registry."""
-        return name in self._predicates
+        return self.get(name) is not None
 
     def supported_checks(self) -> List[str]:
         """Return list of supported check names."""

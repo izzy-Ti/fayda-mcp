@@ -5,7 +5,7 @@ import datetime
 import hashlib
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Union
 import httpx
 from fayda_mcp.config import FaydaConfig
 from fayda_mcp.context import CallerContext
@@ -20,9 +20,12 @@ from fayda_mcp.exceptions import (
     TokenValidationError,
     VerificationNotFoundError,
 )
+from fayda_mcp.predicates import AgeThresholdRule
 
 
-def compute_request_fingerprint(purpose: str, checks: List[str], application_user_ref: str) -> str:
+def compute_request_fingerprint(
+    purpose: str, checks: Sequence[str], application_user_ref: str
+) -> str:
     """Generate deterministic SHA-256 fingerprint of request parameters for idempotency checks."""
     payload = {
         "purpose": str(purpose),
@@ -111,7 +114,7 @@ class FaydaVerificationService:
         self,
         context: CallerContext,
         purpose: str,
-        checks: List[str],
+        checks: Sequence[Union[str, AgeThresholdRule]],
         application_user_ref: str,
         idempotency_key: str,
     ) -> StartVerificationResponse:
@@ -121,12 +124,12 @@ class FaydaVerificationService:
         Reusing an idempotency key with different parameters raises IdempotencyConflictError.
         """
         # 1. Validate against policy before state creation or redirect
-        self.policy.validate_request(purpose=purpose, checks=checks)
+        resolved_checks = self.policy.validate_request(purpose=purpose, checks=checks)
 
         # 2. Compute deterministic request fingerprint
         fingerprint = compute_request_fingerprint(
             purpose=purpose,
-            checks=checks,
+            checks=resolved_checks,
             application_user_ref=application_user_ref,
         )
 
@@ -143,7 +146,7 @@ class FaydaVerificationService:
             "idempotency_key": idempotency_key,
             "request_fingerprint": fingerprint,
             "purpose": purpose,
-            "checks": checks,
+            "checks": resolved_checks,
             "status": "initializing",
             "expires_at": expires_at,
             "policy_version": self.policy.version,
@@ -199,7 +202,7 @@ class FaydaVerificationService:
         nonce = generate_secure_token(32)
         code_verifier, code_challenge = generate_pkce_pair()
 
-        scopes, claims_param = self.policy.resolve_scopes_and_claims(checks)
+        scopes, claims_param = self.policy.resolve_scopes_and_claims(resolved_checks)
         auth_url = build_authorization_url(
             config=self.config,
             state=state,
@@ -218,7 +221,7 @@ class FaydaVerificationService:
             "nonce": nonce,
             "code_verifier": code_verifier,
             "purpose": purpose,
-            "checks": checks,
+            "checks": resolved_checks,
             "expires_at": expires_at,
             "browser_binding": context.browser_binding,
         }
@@ -239,12 +242,13 @@ class FaydaVerificationService:
             "principal_id": context.principal_id,
             "application_user_ref": application_user_ref,
             "purpose": purpose,
-            "checks": checks,
+            "checks": resolved_checks,
             "status": "pending",
             "expires_at": expires_at,
             "idempotency_key": idempotency_key,
             "request_fingerprint": fingerprint,
             "authorization_url": auth_url,
+            "policy_version": self.policy.version,
         }
         await self.results.save_request(
             actual_req_id, pending_record, ttl_seconds=self.config.result_ttl_seconds

@@ -26,8 +26,10 @@ from fayda_mcp.exceptions import (
 from fayda_mcp.policy import VerificationPolicy
 from fayda_mcp.predicates import (
     DEFAULT_PREDICATE_REGISTRY,
+    AgeThresholdRule,
     PredicateDefinition,
     PredicateRegistry,
+    parse_age_check,
 )
 from fayda_mcp.schemas import (
     CancelVerificationResponse,
@@ -62,6 +64,8 @@ __all__ = [
     "PredicateRegistry",
     "PredicateDefinition",
     "DEFAULT_PREDICATE_REGISTRY",
+    "AgeThresholdRule",
+    "parse_age_check",
     "StartVerificationRequest",
     "StartVerificationResponse",
     "VerificationStatusResponse",

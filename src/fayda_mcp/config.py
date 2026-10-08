@@ -42,6 +42,9 @@ class FaydaConfig(BaseModel):
     jwks_jitter_ratio: float = Field(default=0.05, description="Random jitter ratio applied to refresh_at")
     jwks_base_backoff_seconds: float = Field(default=1.0, description="Base exponential backoff seconds for failed JWKS refreshes")
     jwks_max_backoff_seconds: float = Field(default=60.0, description="Max backoff seconds for failed JWKS refreshes")
+    jwks_stale_grace_seconds: float = Field(default=0.0, description="Grace period seconds past hard expiry where known keys may be used if refresh fails (default 0.0 = zero stale grace)")
+    jwks_unknown_kid_cooldown_seconds: float = Field(default=10.0, description="Minimum seconds between synchronous refreshes triggered by unknown kids")
+    jwks_negative_cache_ttl_seconds: float = Field(default=30.0, description="TTL in seconds for negative caching of unknown kids")
     dob_source_calendar: str = Field(default="gregorian", description="Explicit calendar convention for DOB claim: 'gregorian' or 'ethiopic'")
     age_evaluation_timezone: str = Field(default="Africa/Addis_Ababa", description="Host evaluation timezone for age checks")
     february_29_anniversary: str = Field(default="march_1", description="Anniversary rule for Feb 29 birthdates in common years ('march_1' or 'february_28')")
@@ -155,6 +158,9 @@ class FaydaConfig(BaseModel):
             jwks_jitter_ratio=float(get_val(f"{env_prefix}JWKS_JITTER_RATIO", "JWKS_JITTER_RATIO", default="0.05")),
             jwks_base_backoff_seconds=float(get_val(f"{env_prefix}JWKS_BASE_BACKOFF_SECONDS", "JWKS_BASE_BACKOFF_SECONDS", default="1.0")),
             jwks_max_backoff_seconds=float(get_val(f"{env_prefix}JWKS_MAX_BACKOFF_SECONDS", "JWKS_MAX_BACKOFF_SECONDS", default="60.0")),
+            jwks_stale_grace_seconds=float(get_val(f"{env_prefix}JWKS_STALE_GRACE_SECONDS", "JWKS_STALE_GRACE_SECONDS", default="0.0")),
+            jwks_unknown_kid_cooldown_seconds=float(get_val(f"{env_prefix}JWKS_UNKNOWN_KID_COOLDOWN_SECONDS", "JWKS_UNKNOWN_KID_COOLDOWN_SECONDS", default="10.0")),
+            jwks_negative_cache_ttl_seconds=float(get_val(f"{env_prefix}JWKS_NEGATIVE_CACHE_TTL_SECONDS", "JWKS_NEGATIVE_CACHE_TTL_SECONDS", default="30.0")),
             dob_source_calendar=get_val(f"{env_prefix}DOB_SOURCE_CALENDAR", "DOB_SOURCE_CALENDAR", default="gregorian"),
             age_evaluation_timezone=get_val(f"{env_prefix}AGE_EVALUATION_TIMEZONE", "AGE_EVALUATION_TIMEZONE", default="Africa/Addis_Ababa"),
             february_29_anniversary=get_val(f"{env_prefix}FEBRUARY_29_ANNIVERSARY", "FEBRUARY_29_ANNIVERSARY", default="march_1"),

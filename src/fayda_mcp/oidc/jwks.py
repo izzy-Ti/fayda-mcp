@@ -80,6 +80,9 @@ class JwksCache:
         jitter_ratio: Optional[float] = None,
         base_backoff_seconds: Optional[float] = None,
         max_backoff_seconds: Optional[float] = None,
+        stale_grace_seconds: Optional[float] = None,
+        unknown_kid_cooldown_seconds: Optional[float] = None,
+        negative_cache_ttl_seconds: Optional[float] = None,
     ) -> None:
         self.config = config
         self.hard_expiry_factor = (
@@ -107,17 +110,58 @@ class JwksCache:
             if max_backoff_seconds is not None
             else getattr(config, "jwks_max_backoff_seconds", 60.0)
         )
+        self.stale_grace_seconds = (
+            stale_grace_seconds
+            if stale_grace_seconds is not None
+            else getattr(config, "jwks_stale_grace_seconds", 0.0)
+        )
+        self.unknown_kid_cooldown_seconds = (
+            unknown_kid_cooldown_seconds
+            if unknown_kid_cooldown_seconds is not None
+            else getattr(config, "jwks_unknown_kid_cooldown_seconds", 10.0)
+        )
+        self.negative_cache_ttl_seconds = (
+            negative_cache_ttl_seconds
+            if negative_cache_ttl_seconds is not None
+            else getattr(config, "jwks_negative_cache_ttl_seconds", 30.0)
+        )
 
         # Cache keyed by (issuer, jwks_uri)
         self._cache: Dict[Tuple[str, str], JwksCacheEntry] = {}
         self._inflight: Dict[Tuple[str, str], asyncio.Task[Dict[str, Any]]] = {}
         self._backoff: Dict[Tuple[str, str], BackoffState] = {}
+        self._last_unknown_kid_refresh: Dict[Tuple[str, str], float] = {}
+        self._negative_cache: Dict[Tuple[str, str, str], float] = {}
+        self._max_negative_cache_entries: int = 1000
+
         self._lock = asyncio.Lock()
         self._background_tasks: Set[asyncio.Task[Any]] = set()
 
         # Backward compatibility attributes
         self._keys: Dict[str, Any] = {}
         self._last_fetched: float = 0.0
+
+    def is_negatively_cached(
+        self, issuer: str, jwks_uri: str, kid: str, now: float
+    ) -> bool:
+        """Check if kid is in the negative cache and not expired."""
+        key = (issuer, jwks_uri, kid)
+        recorded = self._negative_cache.get(key)
+        if recorded is None:
+            return False
+        if (now - recorded) > self.negative_cache_ttl_seconds:
+            self._negative_cache.pop(key, None)
+            return False
+        return True
+
+    def record_negative_cache(
+        self, issuer: str, jwks_uri: str, kid: str, now: float
+    ) -> None:
+        """Record an unknown kid in the negative cache with bounded capacity."""
+        if len(self._negative_cache) >= self._max_negative_cache_entries:
+            oldest_key = min(self._negative_cache, key=lambda k: self._negative_cache[k])
+            self._negative_cache.pop(oldest_key, None)
+        self._negative_cache[(issuer, jwks_uri, kid)] = now
 
     def add_key(
         self,
@@ -248,7 +292,7 @@ class JwksCache:
         jwks_uri: str,
         client: httpx.AsyncClient,
     ) -> Dict[str, Any]:
-        """Perform the actual HTTP GET with network timeout, parsing, and backoff bookkeeping."""
+        """Perform HTTP GET, atomically replace authoritative key set, and update backoff state."""
         timeout = httpx.Timeout(self.config.http_timeout_seconds)
         now = time.time()
 
@@ -303,11 +347,12 @@ class JwksCache:
         )
 
         async with self._lock:
+            # Atomically replace authoritative keys in cache
             self._cache[cache_key] = entry
             backoff = self._backoff.setdefault(cache_key, BackoffState())
             backoff.record_success()
             if cache_key == (self.config.issuer, self.config.jwks_uri):
-                self._keys.update(keys_dict)
+                self._keys = dict(keys_dict)
                 self._last_fetched = now
 
         return keys_dict
@@ -325,12 +370,25 @@ class JwksCache:
         except Exception as exc:
             raise TokenValidationError(f"Failed to read token header: {exc}") from exc
 
-        kid = header.get("kid")
+        # Security checks: Never fall back to unsigned decoding or token-supplied jku/x5u URLs
+        alg = header.get("alg")
+        if not alg or alg.lower() == "none":
+            raise TokenValidationError("Unsigned JWT (alg=none) is strictly prohibited")
+
+        # Explicitly enforce host configuration for key endpoints; ignore any token-supplied jku/x5u
         target_issuer = issuer or self.config.issuer
         target_uri = jwks_uri or self.config.jwks_uri
         cache_key = (target_issuer, target_uri)
 
+        kid = header.get("kid")
         now = time.time()
+
+        # Check negative cache for known absent kid
+        if kid and self.is_negatively_cached(target_issuer, target_uri, kid, now):
+            raise TokenValidationError(
+                f"Provider key kid '{kid}' is in negative cache for {target_uri}"
+            )
+
         entry = self._cache.get(cache_key)
 
         def find_key(keys: Dict[str, Any]) -> Optional[Any]:
@@ -369,25 +427,91 @@ class JwksCache:
                     return cached_key
 
                 # Subcase 1c: Key is past hard expiry (now >= hard_expiry)
-                # "Keys past hard expiry require successful refresh or fail closed."
-                pass
+                # Requires refresh. If refresh fails, evaluate host stale-while-revalidate policy
+                try:
+                    new_keys = await self.fetch_jwks(client, target_issuer, target_uri)
+                    entry = self._cache.get(cache_key)
+                    resolved = find_key(entry.keys if entry else new_keys)
+                    if resolved is not None:
+                        return resolved
+                    # Key was removed in refreshed authoritative set!
+                    raise TokenValidationError(
+                        f"Provider key kid '{kid}' was removed from trusted JWKS at {target_uri}"
+                    )
+                except TokenValidationError:
+                    raise
+                except Exception as exc:
+                    # Stale-while-revalidate bounded host policy:
+                    if (
+                        self.stale_grace_seconds > 0.0
+                        and now < (entry.hard_expiry + self.stale_grace_seconds)
+                    ):
+                        logger.warning(
+                            "JWKS refresh failed (%s); permitting known key for kid '%s' within approved hard-stale window until %s",
+                            exc,
+                            kid,
+                            entry.hard_expiry + self.stale_grace_seconds,
+                        )
+                        return cached_key
+                    # Zero stale grace (or past grace window) -> FAIL CLOSED
+                    raise ProviderError(
+                        f"Keys past hard expiry at {target_uri} and refresh failed (zero stale grace): {exc}"
+                    ) from exc
 
-        # Case 2: Cache miss or past hard expiry -> Synchronous single-flight refresh
+        # Case 2: Unknown kid or cache miss
+        # If a single-flight fetch is ALREADY in flight for this cache_key, await it
+        flight_task = self._inflight.get(cache_key)
+        if flight_task is not None and not flight_task.done():
+            try:
+                new_keys = await flight_task
+            except Exception as exc:
+                if kid:
+                    self.record_negative_cache(target_issuer, target_uri, kid, now)
+                raise ProviderError(
+                    f"Failed to refresh JWKS for unknown kid '{kid}' at {target_uri}: {exc}"
+                ) from exc
+            entry = self._cache.get(cache_key)
+            resolved_key = find_key(entry.keys if entry else new_keys)
+            if resolved_key is not None:
+                if kid:
+                    self._negative_cache.pop((target_issuer, target_uri, kid), None)
+                return resolved_key
+            if kid:
+                self.record_negative_cache(target_issuer, target_uri, kid, now)
+            raise TokenValidationError(
+                f"Provider key kid '{kid}' not found in trusted JWKS at {target_uri} after refresh"
+            )
+
+        # Check cooldown to prevent unknown-kid floods from creating unbounded network calls
+        last_unknown_refresh = self._last_unknown_kid_refresh.get(cache_key, 0.0)
+        if (now - last_unknown_refresh) < self.unknown_kid_cooldown_seconds:
+            if kid:
+                self.record_negative_cache(target_issuer, target_uri, kid, now)
+            raise TokenValidationError(
+                f"Unknown kid '{kid}' rejected during provider refresh cooldown for {target_uri}"
+            )
+
+        # Perform one bounded synchronous refresh
+        self._last_unknown_kid_refresh[cache_key] = now
         try:
             new_keys = await self.fetch_jwks(client, target_issuer, target_uri)
         except Exception as exc:
-            # If past hard expiry, fail closed!
-            if entry is not None and entry.is_hard_expired(now):
-                raise ProviderError(
-                    f"Keys past hard expiry at {target_uri} and refresh failed: {exc}"
-                ) from exc
-            raise
+            if kid:
+                self.record_negative_cache(target_issuer, target_uri, kid, now)
+            raise ProviderError(
+                f"Failed to refresh JWKS for unknown kid '{kid}' at {target_uri}: {exc}"
+            ) from exc
 
         entry = self._cache.get(cache_key)
         resolved_key = find_key(entry.keys if entry else new_keys)
         if resolved_key is not None:
+            if kid:
+                self._negative_cache.pop((target_issuer, target_uri, kid), None)
             return resolved_key
 
+        # Key remains absent after refresh -> negative cache and reject
+        if kid:
+            self.record_negative_cache(target_issuer, target_uri, kid, now)
         raise TokenValidationError(
             f"Provider key kid '{kid}' not found in trusted JWKS at {target_uri}"
         )

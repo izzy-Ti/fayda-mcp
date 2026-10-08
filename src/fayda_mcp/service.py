@@ -307,7 +307,6 @@ class FaydaVerificationService:
         if (
             record_principal
             and record_principal != "anonymous"
-            and context.principal_id != "anonymous"
             and record_principal != context.principal_id
             and "verification:admin" not in context.scopes
             and "*" not in context.scopes
@@ -423,6 +422,20 @@ class FaydaVerificationService:
             raise InvalidStateError(f"Cannot complete verification: request is {req_status}")
         if req_status in ("verified", "rejected", "failed"):
             raise InvalidStateError("Verification request has already been finalized")
+
+        exp_val = record.get("session_expires_at") or record.get("expires_at")
+        if exp_val is not None:
+            try:
+                exp_ts = float(exp_val)
+            except (ValueError, TypeError):
+                try:
+                    from datetime import datetime as dt_cls
+                    exp_ts = dt_cls.fromisoformat(str(exp_val)).timestamp()
+                except Exception:
+                    exp_ts = 0.0
+            if exp_ts > 0 and time.time() >= exp_ts:
+                await self.results.update_status(request_id, "expired")
+                raise InvalidStateError("Cannot complete verification: request is expired")
 
         # 3. Transition to processing state
         await self.results.update_status(request_id, "processing")

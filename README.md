@@ -81,11 +81,15 @@ This runs the entire end-to-end lifecycle (starts verification -> builds authori
 
 ## Documentation
 
+- [Production, Compatibility & Operations Guide](docs/production_guide.md)
 - [Architecture & Responsibilities](docs/architecture.md)
 - [Configuration Guide & Environment Variables](docs/configuration.md)
 - [Callback Wiring & Session Binding](docs/callback_wiring.md)
 - [Credential Ownership & Cryptography](docs/credentials.md)
 - [Cleanup & Lifecycle Management](docs/cleanup_and_lifecycle.md)
+- [Database Migrations](docs/migrations.md)
+- [Redis Session Storage](docs/redis_sessions.md)
+- [Retention Policy](docs/retention.md)
 
 ---
 

@@ -8,18 +8,26 @@ from pydantic import BaseModel, Field
 class FaydaConfig(BaseModel):
     """Configuration for Fayda eSignet relying-party integration."""
 
-    client_id: str = Field(..., description="Registered Fayda client ID")
-    redirect_uri: str = Field(..., description="Registered developer callback URL")
-    issuer: str = Field(..., description="Fayda OIDC issuer URL")
-    authorization_endpoint: str = Field(..., description="Fayda eSignet authorization endpoint")
-    token_endpoint: str = Field(..., description="Fayda token endpoint")
-    userinfo_endpoint: str = Field(..., description="Fayda UserInfo endpoint")
-    jwks_uri: str = Field(..., description="Fayda JWKS endpoint for public key validation")
+    client_id: str = Field(..., min_length=1, description="Registered Fayda client ID")
+    redirect_uri: str = Field(..., min_length=1, description="Registered developer callback URL")
+    issuer: str = Field(..., min_length=1, description="Fayda OIDC issuer URL")
+    authorization_endpoint: str = Field(..., min_length=1, description="Fayda eSignet authorization endpoint")
+    token_endpoint: str = Field(..., min_length=1, description="Fayda token endpoint")
+    userinfo_endpoint: str = Field(..., min_length=1, description="Fayda UserInfo endpoint")
+    jwks_uri: str = Field(..., min_length=1, description="Fayda JWKS endpoint for public key validation")
 
     # Optional local private key path or direct key material
     signing_key_path: Optional[str] = Field(default=None, description="Path to client private signing key")
-    signing_key: Optional[str] = Field(default=None, description="Direct client private signing key in PEM format")
+    signing_key: Optional[str] = Field(default=None, repr=False, description="Direct client private signing key in PEM format")
     key_id: Optional[str] = Field(default=None, description="Key ID (kid) for JWS client assertion headers")
+
+    def to_redacted_dict(self) -> dict[str, Any]:
+        """Return configuration dictionary with all secret material redacted."""
+        data = self.model_dump()
+        if data.get("signing_key"):
+            data["signing_key"] = "[REDACTED]"
+        return data
+
 
     # Cryptographic & network settings
     allowed_algorithms: List[str] = Field(default_factory=lambda: ["RS256"])

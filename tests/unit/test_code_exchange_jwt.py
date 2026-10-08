@@ -13,6 +13,7 @@ from fayda_mcp import (
     InvalidStateError,
     TokenValidationError,
     AuthenticationError,
+    ProviderError,
 )
 from fayda_mcp.storage.memory import MemoryResultRepository, MemorySessionStore
 from fayda_mcp.oidc.assertions import create_client_assertion
@@ -213,3 +214,60 @@ async def test_bad_pkce_code_exchange_fails(default_config):
 def urllib_parse_body(body_str: str) -> dict:
     import urllib.parse
     return {k: v[0] for k, v in urllib.parse.parse_qs(body_str).items()}
+
+
+@pytest.mark.asyncio
+async def test_jwks_cache_ttl_expiry_and_refresh(default_config, rsa_key_pair):
+    """Verify JWKS cache honors jwks_cache_ttl_seconds and clears expired keys."""
+    priv, pub = rsa_key_pair
+    default_config.jwks_cache_ttl_seconds = 1
+    cache = JwksCache(config=default_config)
+    cache.add_key("key-1", pub)
+
+    token = build_id_token(priv, default_config, headers={"kid": "key-1"})
+
+    # Within TTL: hits cache directly
+    async with httpx.AsyncClient() as client:
+        key = await cache.get_signing_key_for_token(token, client)
+        assert key == pub
+
+    # Advance time beyond TTL
+    cache._last_fetched = time.time() - 10
+
+    # Provider returns empty keys
+    mock_called = False
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal mock_called
+        mock_called = True
+        return httpx.Response(200, json={"keys": []})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(TokenValidationError, match="not found in trusted JWKS"):
+            await cache.get_signing_key_for_token(token, client)
+        assert mock_called is True
+        assert len(cache._keys) == 0
+
+
+@pytest.mark.asyncio
+async def test_jwks_cache_fails_closed_when_provider_fails_after_expiry(default_config, rsa_key_pair):
+    """Verify that expired cached keys fail closed if provider refresh fails."""
+    priv, pub = rsa_key_pair
+    default_config.jwks_cache_ttl_seconds = 1
+    cache = JwksCache(config=default_config)
+    cache.add_key("key-1", pub)
+
+    token = build_id_token(priv, default_config, headers={"kid": "key-1"})
+
+    # Expire the cache
+    cache._last_fetched = time.time() - 10
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="Internal Server Error")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(ProviderError, match="Failed to retrieve provider JWKS"):
+            await cache.get_signing_key_for_token(token, client)
+        # Stale key is evicted, cannot be used
+        assert len(cache._keys) == 0

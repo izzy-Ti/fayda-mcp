@@ -87,6 +87,7 @@ class FaydaVerificationService:
 
     async def aclose(self) -> None:
         """Cleanly close underlying HTTP clients and connections."""
+        await self.jwks.aclose()
         await self._http.aclose()
 
     async def _get_private_key(self) -> Optional[str]:
@@ -472,11 +473,17 @@ class FaydaVerificationService:
             access_token = token_response.get("access_token")
             if access_token:
                 raw_userinfo = await self._http.fetch_userinfo(access_token)
+                userinfo_signing_key = None
+                if isinstance(raw_userinfo, str):
+                    # UserInfo response is a signed JWT; resolve signing key separately by its own kid/alg
+                    userinfo_signing_key = await self.jwks.get_signing_key_for_token(
+                        raw_userinfo, client=self._http.client
+                    )
                 userinfo_claims = validate_userinfo_response(
                     userinfo=raw_userinfo,
                     config=self.config,
                     expected_sub=sub,
-                    signing_key=signing_key,
+                    signing_key=userinfo_signing_key,
                 )
 
             # Merge and normalize claims

@@ -98,6 +98,14 @@ def validate_userinfo_response(
         if signing_key is None:
             raise TokenValidationError("Signing key required for signed UserInfo response")
         try:
+            header = jwt.get_unverified_header(userinfo)
+            alg = header.get("alg")
+            if not alg or alg.lower() == "none":
+                raise TokenValidationError("Unsigned UserInfo JWT (alg=none) is strictly prohibited")
+            if alg not in config.allowed_algorithms:
+                raise TokenValidationError(
+                    f"UserInfo algorithm '{alg}' is not in allowed algorithms: {config.allowed_algorithms}"
+                )
             claims = jwt.decode(
                 userinfo,
                 signing_key,
@@ -107,6 +115,8 @@ def validate_userinfo_response(
                 leeway=config.jwt_clock_skew_seconds,
                 options={"verify_signature": True, "require": ["sub"]},
             )
+        except TokenValidationError:
+            raise
         except Exception as exc:
             raise TokenValidationError(f"Invalid UserInfo JWT: {exc}") from exc
     elif isinstance(userinfo, dict):

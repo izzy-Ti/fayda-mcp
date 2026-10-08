@@ -136,6 +136,8 @@ class JwksCache:
 
         self._lock = asyncio.Lock()
         self._background_tasks: Set[asyncio.Task[Any]] = set()
+        self._worker_task: Optional[asyncio.Task[None]] = None
+        self._is_closed: bool = False
 
         # Backward compatibility attributes
         self._keys: Dict[str, Any] = {}
@@ -230,6 +232,55 @@ class JwksCache:
         target_uri = jwks_uri or self.config.jwks_uri
         task = self._inflight.get((target_issuer, target_uri))
         return task is not None and not task.done()
+
+    def start_periodic_refresh(
+        self,
+        client: httpx.AsyncClient,
+        interval_seconds: Optional[float] = None,
+        issuer: Optional[str] = None,
+        jwks_uri: Optional[str] = None,
+    ) -> asyncio.Task[None]:
+        """Start a periodic background refresh worker within explicit runtime lifecycle."""
+        interval = interval_seconds or float(
+            getattr(self.config, "jwks_refresh_after_seconds", 240)
+        )
+        target_issuer = issuer or self.config.issuer
+        target_uri = jwks_uri or self.config.jwks_uri
+
+        async def _worker() -> None:
+            while not self._is_closed:
+                try:
+                    await asyncio.sleep(interval)
+                    if self._is_closed:
+                        break
+                    await self.fetch_jwks(client, target_issuer, target_uri)
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logger.warning("Periodic JWKS refresh worker encountered error: %s", exc)
+
+        task = asyncio.create_task(_worker())
+        self._worker_task = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    async def aclose(self) -> None:
+        """Cancel and await all in-flight and background tasks upon shutdown."""
+        self._is_closed = True
+        tasks_to_cancel = list(self._background_tasks) + list(self._inflight.values())
+        if self._worker_task is not None and not self._worker_task.done():
+            tasks_to_cancel.append(self._worker_task)
+
+        for task in tasks_to_cancel:
+            task.cancel()
+
+        if tasks_to_cancel:
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+
+        self._background_tasks.clear()
+        self._inflight.clear()
+        self._worker_task = None
 
     async def fetch_jwks(
         self,
@@ -327,10 +378,19 @@ class JwksCache:
             except Exception:
                 continue
 
-        ttl = float(self.config.jwks_cache_ttl_seconds)
-        jitter_val = random.uniform(-self.jitter_ratio, self.jitter_ratio) * ttl
-        refresh_at = now + (ttl * self.refresh_factor) + jitter_val
-        hard_expiry = now + (ttl * self.hard_expiry_factor)
+        refresh_delta = (
+            float(self.config.jwks_refresh_after_seconds)
+            if getattr(self.config, "jwks_refresh_after_seconds", None) is not None
+            else float(self.config.jwks_cache_ttl_seconds) * self.refresh_factor
+        )
+        hard_ttl = (
+            float(self.config.jwks_hard_ttl_seconds)
+            if getattr(self.config, "jwks_hard_ttl_seconds", None) is not None
+            else float(self.config.jwks_cache_ttl_seconds) * self.hard_expiry_factor
+        )
+        jitter_val = random.uniform(-self.jitter_ratio, self.jitter_ratio) * refresh_delta
+        refresh_at = now + refresh_delta + jitter_val
+        hard_expiry = now + hard_ttl
 
         if refresh_at >= hard_expiry:
             refresh_at = hard_expiry - 1.0

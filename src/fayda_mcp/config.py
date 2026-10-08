@@ -37,6 +37,11 @@ class FaydaConfig(BaseModel):
     result_ttl_seconds: int = 900
     jwt_clock_skew_seconds: int = 60
     jwks_cache_ttl_seconds: int = 300
+    jwks_hard_expiry_factor: float = Field(default=2.0, description="Multiplier on TTL to compute hard expiry")
+    jwks_refresh_factor: float = Field(default=0.8, description="Multiplier on TTL to compute refresh_at")
+    jwks_jitter_ratio: float = Field(default=0.05, description="Random jitter ratio applied to refresh_at")
+    jwks_base_backoff_seconds: float = Field(default=1.0, description="Base exponential backoff seconds for failed JWKS refreshes")
+    jwks_max_backoff_seconds: float = Field(default=60.0, description="Max backoff seconds for failed JWKS refreshes")
     dob_source_calendar: str = Field(default="gregorian", description="Explicit calendar convention for DOB claim: 'gregorian' or 'ethiopic'")
     age_evaluation_timezone: str = Field(default="Africa/Addis_Ababa", description="Host evaluation timezone for age checks")
     february_29_anniversary: str = Field(default="march_1", description="Anniversary rule for Feb 29 birthdates in common years ('march_1' or 'february_28')")
@@ -144,6 +149,12 @@ class FaydaConfig(BaseModel):
             client_assertion_ttl_seconds=ttl_seconds,
             session_ttl_seconds=int(get_val(f"{env_prefix}SESSION_TTL_SECONDS", "SESSION_TTL_SECONDS", default="600")),
             result_ttl_seconds=int(get_val(f"{env_prefix}RESULT_TTL_SECONDS", "RESULT_TTL_SECONDS", default="900")),
+            jwks_cache_ttl_seconds=int(get_val(f"{env_prefix}JWKS_CACHE_TTL_SECONDS", "JWKS_CACHE_TTL_SECONDS", default="300")),
+            jwks_hard_expiry_factor=float(get_val(f"{env_prefix}JWKS_HARD_EXPIRY_FACTOR", "JWKS_HARD_EXPIRY_FACTOR", default="2.0")),
+            jwks_refresh_factor=float(get_val(f"{env_prefix}JWKS_REFRESH_FACTOR", "JWKS_REFRESH_FACTOR", default="0.8")),
+            jwks_jitter_ratio=float(get_val(f"{env_prefix}JWKS_JITTER_RATIO", "JWKS_JITTER_RATIO", default="0.05")),
+            jwks_base_backoff_seconds=float(get_val(f"{env_prefix}JWKS_BASE_BACKOFF_SECONDS", "JWKS_BASE_BACKOFF_SECONDS", default="1.0")),
+            jwks_max_backoff_seconds=float(get_val(f"{env_prefix}JWKS_MAX_BACKOFF_SECONDS", "JWKS_MAX_BACKOFF_SECONDS", default="60.0")),
             dob_source_calendar=get_val(f"{env_prefix}DOB_SOURCE_CALENDAR", "DOB_SOURCE_CALENDAR", default="gregorian"),
             age_evaluation_timezone=get_val(f"{env_prefix}AGE_EVALUATION_TIMEZONE", "AGE_EVALUATION_TIMEZONE", default="Africa/Addis_Ababa"),
             february_29_anniversary=get_val(f"{env_prefix}FEBRUARY_29_ANNIVERSARY", "FEBRUARY_29_ANNIVERSARY", default="march_1"),

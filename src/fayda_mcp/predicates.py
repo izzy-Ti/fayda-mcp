@@ -133,6 +133,98 @@ def _age_evaluator(
     return PredicateEvaluation(outcome=age >= threshold, reason=None)
 
 
+def _create_contact_parser(expected_name: str) -> Callable[[str], ParsedPredicate]:
+    def parser(check_name: str) -> ParsedPredicate:
+        if check_name != expected_name:
+            raise ValueError(f"Invalid check name: expected '{expected_name}', got '{check_name}'")
+        target_claim = "phone_number_verified" if expected_name == "phone_verified" else "email_verified"
+        return ParsedPredicate(name=expected_name, target_claim=target_claim)
+
+    return parser
+
+
+def _contact_flag_evaluator(
+    claims: Dict[str, Any],
+    flag_claim: str,
+    contact_claim: str,
+    assurance_key: str,
+) -> PredicateEvaluation:
+    """Strictly evaluate verified contact flags (P3).
+
+    Rules:
+    - Strict True produces True.
+    - Strict False produces False.
+    - Absent, null, wrong-type flags (including strings "false", "true", integers 0, 1) produce 'unavailable'.
+    - A populated contact value alone (e.g. phone_number or email) NEVER produces verified.
+    - If provider supplies equivalent assurance metadata rather than standard flags, maps documented signed metadata.
+    """
+    val = claims.get(flag_claim)
+
+    # 1. Strict boolean check on standard OIDC claim
+    if isinstance(val, bool):
+        return PredicateEvaluation(outcome=val, reason=None)
+
+    # 2. Check documented provider assurance metadata fallback if standard flag is absent
+    assurance = claims.get("assurance_metadata") or claims.get("fayda_assurance")
+    if isinstance(assurance, dict):
+        meta_val = assurance.get(assurance_key)
+        if isinstance(meta_val, bool):
+            return PredicateEvaluation(outcome=meta_val, reason=None)
+
+    # 3. Acceptance rule: A populated contact value alone never produces verified.
+    # Non-boolean types (e.g. "false", "true", integers, None, missing) yield 'unavailable'.
+    return PredicateEvaluation(
+        outcome="unavailable",
+        reason="provider_claim_unavailable",
+    )
+
+
+def _phone_availability_rule(
+    claims: Dict[str, Any], parsed: ParsedPredicate
+) -> Tuple[bool, Optional[str]]:
+    val = claims.get("phone_number_verified")
+    if isinstance(val, bool):
+        return True, None
+    assurance = claims.get("assurance_metadata") or claims.get("fayda_assurance")
+    if isinstance(assurance, dict) and isinstance(assurance.get("phone_verified"), bool):
+        return True, None
+    return False, "provider_claim_unavailable"
+
+
+def _phone_evaluator(
+    claims: Dict[str, Any], context: PredicateContext, parsed: ParsedPredicate
+) -> PredicateEvaluation:
+    return _contact_flag_evaluator(
+        claims=claims,
+        flag_claim="phone_number_verified",
+        contact_claim="phone_number",
+        assurance_key="phone_verified",
+    )
+
+
+def _email_availability_rule(
+    claims: Dict[str, Any], parsed: ParsedPredicate
+) -> Tuple[bool, Optional[str]]:
+    val = claims.get("email_verified")
+    if isinstance(val, bool):
+        return True, None
+    assurance = claims.get("assurance_metadata") or claims.get("fayda_assurance")
+    if isinstance(assurance, dict) and isinstance(assurance.get("email_verified"), bool):
+        return True, None
+    return False, "provider_claim_unavailable"
+
+
+def _email_evaluator(
+    claims: Dict[str, Any], context: PredicateContext, parsed: ParsedPredicate
+) -> PredicateEvaluation:
+    return _contact_flag_evaluator(
+        claims=claims,
+        flag_claim="email_verified",
+        contact_claim="email",
+        assurance_key="email_verified",
+    )
+
+
 @dataclass(frozen=True)
 class AgeThresholdRule:
     """Typed rule for age verification thresholds.
@@ -419,7 +511,34 @@ def create_default_predicate_registry() -> PredicateRegistry:
         )
     )
 
+    # 4. Phone Verified
+    registry.register(
+        PredicateDefinition(
+            name="phone_verified",
+            description="Verified citizen phone number flag (phone_number_verified)",
+            required_claims=["phone_number_verified"],
+            required_scopes=["openid", "phone"],
+            parser=_create_contact_parser("phone_verified"),
+            availability_rule=_phone_availability_rule,
+            evaluator=_phone_evaluator,
+        )
+    )
+
+    # 5. Email Verified
+    registry.register(
+        PredicateDefinition(
+            name="email_verified",
+            description="Verified citizen email address flag (email_verified)",
+            required_claims=["email_verified"],
+            required_scopes=["openid", "email"],
+            parser=_create_contact_parser("email_verified"),
+            availability_rule=_email_availability_rule,
+            evaluator=_email_evaluator,
+        )
+    )
+
     return registry
 
 
 DEFAULT_PREDICATE_REGISTRY: PredicateRegistry = create_default_predicate_registry()
+

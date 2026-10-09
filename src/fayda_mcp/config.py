@@ -52,6 +52,8 @@ class FaydaConfig(BaseModel):
     age_evaluation_timezone: str = Field(default="Africa/Addis_Ababa", description="Host evaluation timezone for age checks")
     february_29_anniversary: str = Field(default="march_1", description="Anniversary rule for Feb 29 birthdates in common years ('march_1' or 'february_28')")
     claims_locales: List[str] = Field(default_factory=lambda: ["en", "am", "om", "so", "ti", "sid", "wal"], description="Permitted/supported selection locales")
+    qr_key_bundle_path: Optional[str] = Field(default=None, description="Path to operator-managed QR public key bundle or directory")
+    qr_public_key_pem: Optional[str] = Field(default=None, description="Inline operator-approved QR public key PEM string")
 
     @classmethod
     def from_env(cls, env_prefix: str = "FAYDA_", dotenv_path: Optional[str] = None) -> "FaydaConfig":
@@ -173,6 +175,8 @@ class FaydaConfig(BaseModel):
             claims_locales=[
                 loc.strip() for loc in get_val(f"{env_prefix}CLAIMS_LOCALES", "CLAIMS_LOCALES", default="en am om so ti sid wal").replace(",", " ").split() if loc.strip()
             ],
+            qr_key_bundle_path=get_val(f"{env_prefix}QR_KEY_BUNDLE_PATH", "QR_KEY_BUNDLE_PATH", default="") or None,
+            qr_public_key_pem=get_val(f"{env_prefix}QR_PUBLIC_KEY_PEM", "QR_PUBLIC_KEY_PEM", default="") or None,
         )
 
     @classmethod

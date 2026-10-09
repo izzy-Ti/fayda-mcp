@@ -63,6 +63,12 @@ from fayda_mcp.qr.parser import (
     parse_qr_code,
     validate_scanner_text,
 )
+from fayda_mcp.qr.trust import (
+    QRTrustStore,
+    TrustedKey,
+    calculate_key_thumbprint,
+    load_trust_store_from_config,
+)
 
 __all__ = [
     "SUPPORTED_QR_VERSIONS",
@@ -105,5 +111,9 @@ __all__ = [
     "normalize_gender_for_display",
     "normalize_dob_for_display",
     "parse_qr_code",
+    "TrustedKey",
+    "QRTrustStore",
+    "calculate_key_thumbprint",
+    "load_trust_store_from_config",
 ]
 

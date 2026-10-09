@@ -73,6 +73,7 @@ from fayda_mcp.qr.signatures import (
     SignatureVerificationOutcome,
     verify_detached_qr_signature,
 )
+from fayda_mcp.qr.decoder import decode_and_verify_qr
 
 __all__ = [
     "SUPPORTED_QR_VERSIONS",
@@ -121,5 +122,6 @@ __all__ = [
     "load_trust_store_from_config",
     "SignatureVerificationOutcome",
     "verify_detached_qr_signature",
+    "decode_and_verify_qr",
 ]
 

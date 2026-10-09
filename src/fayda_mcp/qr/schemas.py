@@ -262,7 +262,7 @@ class QRVerificationResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["verified", "invalid_signature", "malformed_input", "untrusted_key", "error"] = Field(
+    status: Literal["verified", "unverified", "invalid_signature", "malformed_input", "untrusted_key", "error"] = Field(
         ...,
         description="High-level verification status outcome",
     )

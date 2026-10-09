@@ -5,7 +5,9 @@ signature verification, bounds input size limits, and isolates display normaliza
 from signature payload bytes.
 """
 
+import base64
 import hashlib
+import json
 import re
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,6 +18,7 @@ from fayda_mcp.qr.schemas import (
     ParsedQRCode,
     QRDelimiterError,
     QRDemographics,
+    QRInvalidBase64Error,
     QRInvalidDateError,
     QRMalformedError,
     QRPayloadSizeExceededError,
@@ -139,81 +142,102 @@ def parse_qr_code(
     Expected layout (Version 4):
     <photo_base64url>:DLT:<FullName>:V:<Version>:G:<Gender>:A:<FAN>:D:<DOB>:SIGN:<detached_jws>
 
-    Args:
-        raw_text: Exact scanner input string (untrimmed to preserve signed payload bytes).
-        max_bytes: Maximum allowed byte length for scanner payload.
-        dob_calendar: Calendar convention for birthdate normalization ('gregorian' or 'ethiopic').
-
-    Returns:
-        ParsedQRCode containing preserved raw text, demographics, and signature metadata.
-
-    Raises:
-        QRMalformedError: If input is non-string, empty, or has corrupt signature structure.
-        QRPayloadSizeExceededError: If raw text exceeds max_bytes.
-        QRDelimiterError: If any of the mandatory delimiters (:DLT:, :V:, :G:, :A:, :D:, :SIGN:) are missing.
-        QRUnsupportedVersionError: If parsed version is not 4.
-        QRInvalidDateError: If date of birth cannot be parsed or normalized.
+    Validations & Invariants:
+    1. Unchanged scanner text preserved within bounded memory limits.
+    2. Exactly one occurrence of each mandatory delimiter (:DLT:, :V:, :G:, :A:, :D:, :SIGN:).
+    3. Strict ascending ordering of delimiters.
+    4. Non-empty field segments.
+    5. Valid base64url encoding and WebP RIFF header for photo.
+    6. Version integer must match supported specification (v4).
+    7. Valid date of birth format.
+    8. Valid detached JWS syntax (RFC 7515 Appendix F) and 256-byte signature length.
     """
     validated_text = validate_scanner_text(raw_text, max_bytes=max_bytes)
 
-    if DELIMITER_SIGN not in validated_text:
+    # 1. Delimiter presence and uniqueness checks (reject missing or repeated tags)
+    mandatory_tags = (":DLT:", ":V:", ":G:", ":A:", ":D:", ":SIGN:")
+    for tag in mandatory_tags:
+        count = validated_text.count(tag)
+        if count == 0:
+            raise QRDelimiterError(
+                message=f"Missing mandatory delimiter '{tag}' in QR code payload.",
+                details={"delimiter": tag},
+            )
+        elif count > 1:
+            raise QRDelimiterError(
+                message=f"Repeated/ambiguous delimiter '{tag}' detected in QR code ({count} occurrences).",
+                details={"delimiter": tag, "count": count},
+            )
+
+    # 2. Strict delimiter sequence ordering
+    pos_dlt = validated_text.find(":DLT:")
+    pos_v = validated_text.find(":V:")
+    pos_g = validated_text.find(":G:")
+    pos_a = validated_text.find(":A:")
+    pos_d = validated_text.find(":D:")
+    pos_sign = validated_text.find(":SIGN:")
+
+    if not (0 <= pos_dlt < pos_v < pos_g < pos_a < pos_d < pos_sign):
         raise QRDelimiterError(
-            message=f"Missing mandatory signature delimiter '{DELIMITER_SIGN}' in QR code.",
-            details={"delimiter": DELIMITER_SIGN},
+            message="Delimiters are out of required order (<photo>:DLT:<name>:V:<version>:G:<gender>:A:<fan>:D:<dob>:SIGN:<signature>).",
+            details={
+                "positions": {
+                    ":DLT:": pos_dlt,
+                    ":V:": pos_v,
+                    ":G:": pos_g,
+                    ":A:": pos_a,
+                    ":D:": pos_d,
+                    ":SIGN:": pos_sign,
+                }
+            },
         )
 
-    signed_payload_text, detached_jws = validated_text.split(DELIMITER_SIGN, 1)
+    # 3. Extract segments
+    signed_payload_text = validated_text[:pos_sign]
+    detached_jws = validated_text[pos_sign + len(":SIGN:"):]
 
-    # Validate delimiter ordering and extraction in signed payload
-    pos_dlt = signed_payload_text.find(":DLT:")
-    if pos_dlt == -1:
-        raise QRDelimiterError(
-            message="Missing mandatory ':DLT:' delimiter preceding full name.",
-            details={"delimiter": ":DLT:"},
+    photo_base64url = validated_text[:pos_dlt]
+    raw_name = validated_text[pos_dlt + len(":DLT:") : pos_v]
+    raw_version = validated_text[pos_v + len(":V:") : pos_g]
+    raw_gender = validated_text[pos_g + len(":G:") : pos_a]
+    raw_fan = validated_text[pos_a + len(":A:") : pos_d]
+    raw_dob = validated_text[pos_d + len(":D:") : pos_sign]
+
+    # 4. Segment non-empty validations
+    if not photo_base64url or not photo_base64url.strip():
+        raise QRMalformedError("Extracted photo segment preceding ':DLT:' cannot be empty.")
+    if not raw_name or not raw_name.strip():
+        raise QRMalformedError("Extracted name segment between ':DLT:' and ':V:' cannot be empty.")
+    if not raw_version or not raw_version.strip():
+        raise QRUnsupportedVersionError("Version segment cannot be empty.")
+    if not raw_gender or not raw_gender.strip():
+        raise QRMalformedError("Extracted gender segment between ':G:' and ':A:' cannot be empty.")
+    if not raw_fan or not raw_fan.strip():
+        raise QRMalformedError("Extracted FAN segment between ':A:' and ':D:' cannot be empty.")
+    if not raw_dob or not raw_dob.strip():
+        raise QRMalformedError("Extracted DOB segment following ':D:' cannot be empty.")
+    if not detached_jws or not detached_jws.strip():
+        raise QRMalformedError("Detached JWS signature token following ':SIGN:' cannot be empty.")
+
+    # 5. Base64url and WebP format validation on photo
+    if not re.match(r"^[A-Za-z0-9_-]+={0,2}$", photo_base64url):
+        raise QRInvalidBase64Error(
+            message="Photo segment contains invalid base64url characters.",
+            details={"photo_snippet": photo_base64url[:20]},
+        )
+    try:
+        photo_padding = "=" * ((4 - len(photo_base64url) % 4) % 4)
+        photo_bytes = base64.urlsafe_b64decode(photo_base64url + photo_padding)
+    except Exception as e:
+        raise QRInvalidBase64Error(
+            message=f"Failed to decode base64url photo payload: {e}",
+            details={"error": str(e)},
         )
 
-    pos_v = signed_payload_text.find(":V:", pos_dlt + len(":DLT:"))
-    if pos_v == -1:
-        raise QRDelimiterError(
-            message="Missing mandatory ':V:' delimiter preceding version.",
-            details={"delimiter": ":V:"},
-        )
+    if len(photo_bytes) < 12 or photo_bytes[:4] != b"RIFF" or photo_bytes[8:12] != b"WEBP":
+        raise QRMalformedError("Photo segment is not a valid WebP image (missing RIFF/WEBP header).")
 
-    pos_g = signed_payload_text.find(":G:", pos_v + len(":V:"))
-    if pos_g == -1:
-        raise QRDelimiterError(
-            message="Missing mandatory ':G:' delimiter preceding gender.",
-            details={"delimiter": ":G:"},
-        )
-
-    pos_a = signed_payload_text.find(":A:", pos_g + len(":G:"))
-    if pos_a == -1:
-        raise QRDelimiterError(
-            message="Missing mandatory ':A:' delimiter preceding FAN.",
-            details={"delimiter": ":A:"},
-        )
-
-    pos_d = signed_payload_text.find(":D:", pos_a + len(":A:"))
-    if pos_d == -1:
-        raise QRDelimiterError(
-            message="Missing mandatory ':D:' delimiter preceding birthdate.",
-            details={"delimiter": ":D:"},
-        )
-
-    # Extract raw segment fields
-    photo_base64url = signed_payload_text[:pos_dlt]
-    raw_name = signed_payload_text[pos_dlt + len(":DLT:") : pos_v]
-    raw_version = signed_payload_text[pos_v + len(":V:") : pos_g]
-    raw_gender = signed_payload_text[pos_g + len(":G:") : pos_a]
-    raw_fan = signed_payload_text[pos_a + len(":A:") : pos_d]
-    raw_dob = signed_payload_text[pos_d + len(":D:") :]
-
-    if not photo_base64url:
-        raise QRMalformedError("Extracted photo segment preceding ':DLT:' is empty.")
-
-    if not raw_name:
-        raise QRMalformedError("Extracted name segment between ':DLT:' and ':V:' is empty.")
-
+    # 6. Version validation
     try:
         version_int = int(raw_version.strip())
     except ValueError:
@@ -222,32 +246,59 @@ def parse_qr_code(
     if version_int not in SUPPORTED_QR_VERSIONS:
         raise QRUnsupportedVersionError(version=version_int)
 
-    if not raw_gender:
-        raise QRMalformedError("Extracted gender segment between ':G:' and ':A:' is empty.")
-
-    if not raw_fan:
-        raise QRMalformedError("Extracted FAN segment between ':A:' and ':D:' is empty.")
-
-    if not raw_dob:
-        raise QRMalformedError("Extracted DOB segment following ':D:' is empty.")
-
+    # 7. DOB normalization and calendar handling
     dob_normalized = normalize_dob_for_display(raw_dob, calendar=dob_calendar)
     if not dob_normalized:
         raise QRInvalidDateError(dob_str=raw_dob)
 
-    # Decode and validate detached JWS signature metadata
-    try:
-        header, sig_bytes = decode_detached_jws(detached_jws)
-    except ValueError as e:
+    # 8. Detached JWS validation per RFC 7515 Appendix F
+    if ".." not in detached_jws:
         raise QRMalformedError(
-            message=f"Malformed detached JWS token: {e}",
+            message="Detached JWS token must contain '..' representing detached payload.",
             details={"raw_jws": detached_jws},
+        )
+    jws_parts = detached_jws.split("..")
+    if len(jws_parts) != 2:
+        raise QRMalformedError(
+            message="Detached JWS token contains ambiguous delimiter structure.",
+            details={"parts_count": len(jws_parts)},
+        )
+    header_b64, sig_b64 = jws_parts[0].strip(), jws_parts[1].strip()
+
+    if not header_b64:
+        raise QRMalformedError("Missing JWS protected header preceding '..'.")
+    if not sig_b64:
+        raise QRMalformedError("Missing JWS signature following '..'.")
+
+    # Protected header base64url
+    if not re.match(r"^[A-Za-z0-9_-]+={0,2}$", header_b64):
+        raise QRInvalidBase64Error("JWS protected header contains invalid base64url characters.")
+    try:
+        header_padding = "=" * ((4 - len(header_b64) % 4) % 4)
+        header_bytes = base64.urlsafe_b64decode(header_b64 + header_padding)
+        header = json.loads(header_bytes.decode("utf-8"))
+    except Exception as e:
+        raise QRInvalidBase64Error(f"Failed to decode JWS protected header: {e}")
+
+    # Signature base64url
+    if not re.match(r"^[A-Za-z0-9_-]+={0,2}$", sig_b64):
+        raise QRInvalidBase64Error("JWS signature contains invalid base64url characters.")
+    try:
+        sig_padding = "=" * ((4 - len(sig_b64) % 4) % 4)
+        sig_bytes = base64.urlsafe_b64decode(sig_b64 + sig_padding)
+    except Exception as e:
+        raise QRInvalidBase64Error(f"Failed to decode JWS signature: {e}")
+
+    if len(sig_bytes) != 256:
+        raise QRMalformedError(
+            message=f"Invalid RSA signature byte length: expected 256 bytes, got {len(sig_bytes)} bytes.",
+            details={"signature_bytes_len": len(sig_bytes)},
         )
 
     sig_metadata = QRSignatureMetadata(
         algorithm=str(header.get("alg", "RS256")),
         key_id=header.get("kid"),
-        header_raw=detached_jws.split("..")[0],
+        header_raw=header_b64,
         signature_bytes_len=len(sig_bytes),
     )
 

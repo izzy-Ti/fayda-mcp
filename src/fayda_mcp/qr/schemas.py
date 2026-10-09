@@ -85,6 +85,14 @@ class QRPayloadSizeExceededError(QRVerificationError):
         super().__init__(message=msg, code=QRErrorCode.PAYLOAD_SIZE_EXCEEDED, details=details)
 
 
+class QRInvalidBase64Error(QRMalformedError):
+    """Raised when base64url decoding fails for photo or detached signature."""
+
+    def __init__(self, message: str = "Invalid base64url encoding", details: Optional[Dict[str, Any]] = None):
+        super().__init__(message=message, details=details)
+        self.code = QRErrorCode.INVALID_BASE64.value
+
+
 class QRInvalidSignatureError(QRVerificationError):
     """Raised when cryptographic detached RS256 signature verification fails."""
 

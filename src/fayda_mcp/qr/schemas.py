@@ -126,9 +126,17 @@ class QRDemographics(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     photo_base64url: str = Field(..., description="Base64url-encoded WebP photo from the signed card payload")
-    name: str = Field(..., description="Full legal name of the credential holder")
+    name: str = Field(..., description="Full legal name of the credential holder (preserved raw)")
+    name_normalized: Optional[str] = Field(
+        default=None,
+        description="Whitespace-normalized full name for display",
+    )
     version: int = Field(default=4, description="QR profile version number (e.g., 4)")
     gender: str = Field(..., description="Holder gender code as encoded on the card ('M', 'F', etc.)")
+    gender_normalized: Optional[str] = Field(
+        default=None,
+        description="Standardized uppercase gender code for display ('M', 'F', 'O')",
+    )
     fan: str = Field(..., description="Fayda Identification Number (FAN / FIN) raw display string with spacing")
     fan_normalized: str = Field(..., description="Normalized 16-digit FAN with all whitespace removed")
     date_of_birth: str = Field(..., description="Raw date of birth as printed in the QR code (YYYY/MM/DD)")

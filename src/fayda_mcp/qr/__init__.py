@@ -51,6 +51,17 @@ from fayda_mcp.qr.schemas import (
     QRVerificationResult,
 )
 
+from fayda_mcp.qr.parser import (
+    ScannerInput,
+    format_fan_display,
+    ingest_scanner_text,
+    normalize_dob_for_display,
+    normalize_fan_digits,
+    normalize_gender_for_display,
+    normalize_name_for_display,
+    validate_scanner_text,
+)
+
 __all__ = [
     "SUPPORTED_QR_VERSIONS",
     "DEFAULT_QR_VERSION",
@@ -82,5 +93,13 @@ __all__ = [
     "QREvidence",
     "ParsedQRCode",
     "QRVerificationResult",
+    "ScannerInput",
+    "validate_scanner_text",
+    "ingest_scanner_text",
+    "normalize_fan_digits",
+    "format_fan_display",
+    "normalize_name_for_display",
+    "normalize_gender_for_display",
+    "normalize_dob_for_display",
 ]
 

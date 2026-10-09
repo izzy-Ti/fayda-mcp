@@ -32,6 +32,24 @@ from fayda_mcp.qr.signed_content import (
     extract_signed_payload,
     normalize_qr_dob,
 )
+from fayda_mcp.qr.schemas import (
+    MAX_QR_TEXT_BYTES,
+    ParsedQRCode,
+    QRDelimiterError,
+    QRDemographics,
+    QRErrorCode,
+    QREvidence,
+    QRInvalidDateError,
+    QRInvalidSignatureError,
+    QRKeyBundleMissingError,
+    QRMalformedError,
+    QRPayloadSizeExceededError,
+    QRSignatureMetadata,
+    QRUnsupportedVersionError,
+    QRUntrustedKeyError,
+    QRVerificationError,
+    QRVerificationResult,
+)
 
 __all__ = [
     "SUPPORTED_QR_VERSIONS",
@@ -48,4 +66,21 @@ __all__ = [
     "decode_detached_jws",
     "build_jws_signing_input",
     "normalize_qr_dob",
+    "MAX_QR_TEXT_BYTES",
+    "QRErrorCode",
+    "QRVerificationError",
+    "QRMalformedError",
+    "QRDelimiterError",
+    "QRUnsupportedVersionError",
+    "QRPayloadSizeExceededError",
+    "QRInvalidSignatureError",
+    "QRUntrustedKeyError",
+    "QRKeyBundleMissingError",
+    "QRInvalidDateError",
+    "QRDemographics",
+    "QRSignatureMetadata",
+    "QREvidence",
+    "ParsedQRCode",
+    "QRVerificationResult",
 ]
+

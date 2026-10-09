@@ -82,6 +82,7 @@ This runs the entire end-to-end lifecycle (starts verification -> builds authori
 ## Documentation
 
 - [Production, Compatibility & Operations Guide](docs/production_guide.md)
+- [QR Credential Profile Specification](docs/qr_profile.md)
 - [Architecture & Responsibilities](docs/architecture.md)
 - [Configuration Guide & Environment Variables](docs/configuration.md)
 - [Callback Wiring & Session Binding](docs/callback_wiring.md)

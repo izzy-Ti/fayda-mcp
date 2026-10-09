@@ -1,6 +1,6 @@
 [project]
 name = "fayda-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fayda eSignet identity verification tools for Model Context Protocol (MCP)"
 readme = "README.md"
 license = { text = "Apache-2.0" }

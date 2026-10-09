@@ -69,6 +69,10 @@ from fayda_mcp.qr.trust import (
     calculate_key_thumbprint,
     load_trust_store_from_config,
 )
+from fayda_mcp.qr.signatures import (
+    SignatureVerificationOutcome,
+    verify_detached_qr_signature,
+)
 
 __all__ = [
     "SUPPORTED_QR_VERSIONS",
@@ -115,5 +119,7 @@ __all__ = [
     "QRTrustStore",
     "calculate_key_thumbprint",
     "load_trust_store_from_config",
+    "SignatureVerificationOutcome",
+    "verify_detached_qr_signature",
 ]
 

@@ -14,6 +14,7 @@ from fayda_mcp.schemas import CheckOutcomeType
 
 # Maximum allowed size for raw scanner input (bounded memory protection)
 MAX_QR_TEXT_BYTES: int = 16384  # 16 KB
+SUPPORTED_QR_VERSIONS = (4,)
 
 
 class QRErrorCode(str, Enum):
@@ -241,6 +242,7 @@ class ParsedQRCode(BaseModel):
     demographics: QRDemographics = Field(..., description="Extracted demographic fields")
     signature: QRSignatureMetadata = Field(..., description="Extracted signature metadata")
     signed_payload_text: str = Field(..., description="Exact string portion preceding ':SIGN:'")
+    detached_jws: str = Field(default="", description="Detached JWS signature string following ':SIGN:'")
 
 
 class QRVerificationResult(BaseModel):

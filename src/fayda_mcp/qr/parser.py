@@ -12,10 +12,21 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from fayda_mcp.qr.schemas import (
     MAX_QR_TEXT_BYTES,
+    SUPPORTED_QR_VERSIONS,
+    ParsedQRCode,
+    QRDelimiterError,
+    QRDemographics,
+    QRInvalidDateError,
     QRMalformedError,
     QRPayloadSizeExceededError,
+    QRSignatureMetadata,
+    QRUnsupportedVersionError,
 )
-from fayda_mcp.qr.signed_content import normalize_qr_dob
+from fayda_mcp.qr.signed_content import (
+    DELIMITER_SIGN,
+    decode_detached_jws,
+    normalize_qr_dob,
+)
 
 
 class ScannerInput(BaseModel):
@@ -116,3 +127,148 @@ def normalize_gender_for_display(raw_gender: str) -> str:
 def normalize_dob_for_display(raw_dob: str, calendar: str = "gregorian") -> Optional[str]:
     """Normalize raw date of birth (YYYY/MM/DD) to ISO format (YYYY-MM-DD)."""
     return normalize_qr_dob(raw_dob, calendar=calendar)
+
+
+def parse_qr_code(
+    raw_text: str,
+    max_bytes: int = MAX_QR_TEXT_BYTES,
+    dob_calendar: str = "gregorian",
+) -> ParsedQRCode:
+    """Parse raw Fayda QR code scanner text into structured demographic and signature records.
+
+    Expected layout (Version 4):
+    <photo_base64url>:DLT:<FullName>:V:<Version>:G:<Gender>:A:<FAN>:D:<DOB>:SIGN:<detached_jws>
+
+    Args:
+        raw_text: Exact scanner input string (untrimmed to preserve signed payload bytes).
+        max_bytes: Maximum allowed byte length for scanner payload.
+        dob_calendar: Calendar convention for birthdate normalization ('gregorian' or 'ethiopic').
+
+    Returns:
+        ParsedQRCode containing preserved raw text, demographics, and signature metadata.
+
+    Raises:
+        QRMalformedError: If input is non-string, empty, or has corrupt signature structure.
+        QRPayloadSizeExceededError: If raw text exceeds max_bytes.
+        QRDelimiterError: If any of the mandatory delimiters (:DLT:, :V:, :G:, :A:, :D:, :SIGN:) are missing.
+        QRUnsupportedVersionError: If parsed version is not 4.
+        QRInvalidDateError: If date of birth cannot be parsed or normalized.
+    """
+    validated_text = validate_scanner_text(raw_text, max_bytes=max_bytes)
+
+    if DELIMITER_SIGN not in validated_text:
+        raise QRDelimiterError(
+            message=f"Missing mandatory signature delimiter '{DELIMITER_SIGN}' in QR code.",
+            details={"delimiter": DELIMITER_SIGN},
+        )
+
+    signed_payload_text, detached_jws = validated_text.split(DELIMITER_SIGN, 1)
+
+    # Validate delimiter ordering and extraction in signed payload
+    pos_dlt = signed_payload_text.find(":DLT:")
+    if pos_dlt == -1:
+        raise QRDelimiterError(
+            message="Missing mandatory ':DLT:' delimiter preceding full name.",
+            details={"delimiter": ":DLT:"},
+        )
+
+    pos_v = signed_payload_text.find(":V:", pos_dlt + len(":DLT:"))
+    if pos_v == -1:
+        raise QRDelimiterError(
+            message="Missing mandatory ':V:' delimiter preceding version.",
+            details={"delimiter": ":V:"},
+        )
+
+    pos_g = signed_payload_text.find(":G:", pos_v + len(":V:"))
+    if pos_g == -1:
+        raise QRDelimiterError(
+            message="Missing mandatory ':G:' delimiter preceding gender.",
+            details={"delimiter": ":G:"},
+        )
+
+    pos_a = signed_payload_text.find(":A:", pos_g + len(":G:"))
+    if pos_a == -1:
+        raise QRDelimiterError(
+            message="Missing mandatory ':A:' delimiter preceding FAN.",
+            details={"delimiter": ":A:"},
+        )
+
+    pos_d = signed_payload_text.find(":D:", pos_a + len(":A:"))
+    if pos_d == -1:
+        raise QRDelimiterError(
+            message="Missing mandatory ':D:' delimiter preceding birthdate.",
+            details={"delimiter": ":D:"},
+        )
+
+    # Extract raw segment fields
+    photo_base64url = signed_payload_text[:pos_dlt]
+    raw_name = signed_payload_text[pos_dlt + len(":DLT:") : pos_v]
+    raw_version = signed_payload_text[pos_v + len(":V:") : pos_g]
+    raw_gender = signed_payload_text[pos_g + len(":G:") : pos_a]
+    raw_fan = signed_payload_text[pos_a + len(":A:") : pos_d]
+    raw_dob = signed_payload_text[pos_d + len(":D:") :]
+
+    if not photo_base64url:
+        raise QRMalformedError("Extracted photo segment preceding ':DLT:' is empty.")
+
+    if not raw_name:
+        raise QRMalformedError("Extracted name segment between ':DLT:' and ':V:' is empty.")
+
+    try:
+        version_int = int(raw_version.strip())
+    except ValueError:
+        raise QRUnsupportedVersionError(version=raw_version)
+
+    if version_int not in SUPPORTED_QR_VERSIONS:
+        raise QRUnsupportedVersionError(version=version_int)
+
+    if not raw_gender:
+        raise QRMalformedError("Extracted gender segment between ':G:' and ':A:' is empty.")
+
+    if not raw_fan:
+        raise QRMalformedError("Extracted FAN segment between ':A:' and ':D:' is empty.")
+
+    if not raw_dob:
+        raise QRMalformedError("Extracted DOB segment following ':D:' is empty.")
+
+    dob_normalized = normalize_dob_for_display(raw_dob, calendar=dob_calendar)
+    if not dob_normalized:
+        raise QRInvalidDateError(dob_str=raw_dob)
+
+    # Decode and validate detached JWS signature metadata
+    try:
+        header, sig_bytes = decode_detached_jws(detached_jws)
+    except ValueError as e:
+        raise QRMalformedError(
+            message=f"Malformed detached JWS token: {e}",
+            details={"raw_jws": detached_jws},
+        )
+
+    sig_metadata = QRSignatureMetadata(
+        algorithm=str(header.get("alg", "RS256")),
+        key_id=header.get("kid"),
+        header_raw=detached_jws.split("..")[0],
+        signature_bytes_len=len(sig_bytes),
+    )
+
+    demographics = QRDemographics(
+        photo_base64url=photo_base64url,
+        name=raw_name,
+        name_normalized=normalize_name_for_display(raw_name),
+        version=version_int,
+        gender=raw_gender,
+        gender_normalized=normalize_gender_for_display(raw_gender),
+        fan=raw_fan,
+        fan_normalized=normalize_fan_digits(raw_fan),
+        date_of_birth=raw_dob,
+        dob_normalized=dob_normalized,
+        dob_calendar=dob_calendar,
+    )
+
+    return ParsedQRCode(
+        raw_text=raw_text,
+        demographics=demographics,
+        signature=sig_metadata,
+        signed_payload_text=signed_payload_text,
+        detached_jws=detached_jws,
+    )

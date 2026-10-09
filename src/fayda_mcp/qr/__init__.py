@@ -59,6 +59,7 @@ from fayda_mcp.qr.parser import (
     normalize_fan_digits,
     normalize_gender_for_display,
     normalize_name_for_display,
+    parse_qr_code,
     validate_scanner_text,
 )
 
@@ -101,5 +102,6 @@ __all__ = [
     "normalize_name_for_display",
     "normalize_gender_for_display",
     "normalize_dob_for_display",
+    "parse_qr_code",
 ]
 

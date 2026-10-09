@@ -20,7 +20,7 @@ def create_test_service() -> FaydaVerificationService:
         token_endpoint="https://esignet.example/token",
         userinfo_endpoint="https://esignet.example/userinfo",
         jwks_uri="https://esignet.example/jwks",
-        signing_key="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC3\n-----END PRIVATE KEY-----",
+        signing_key="mock_test_signing_key_secret_material",
     )
     return FaydaVerificationService(
         config=config,

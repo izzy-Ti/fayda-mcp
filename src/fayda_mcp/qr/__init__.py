@@ -25,6 +25,14 @@ QR_DELIMITERS = (
     TAG_SIGNATURE,
 )
 
+from fayda_mcp.qr.signed_content import (
+    DELIMITER_SIGN,
+    build_jws_signing_input,
+    decode_detached_jws,
+    extract_signed_payload,
+    normalize_qr_dob,
+)
+
 __all__ = [
     "SUPPORTED_QR_VERSIONS",
     "DEFAULT_QR_VERSION",
@@ -35,4 +43,9 @@ __all__ = [
     "TAG_DOB",
     "TAG_SIGNATURE",
     "QR_DELIMITERS",
+    "DELIMITER_SIGN",
+    "extract_signed_payload",
+    "decode_detached_jws",
+    "build_jws_signing_input",
+    "normalize_qr_dob",
 ]

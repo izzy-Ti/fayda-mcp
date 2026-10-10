@@ -26,6 +26,7 @@ from fayda_mcp.qr.schemas import (
     QRUnsupportedVersionError,
 )
 from fayda_mcp.qr.signed_content import (
+    CONFIRMED_CALENDARS,
     DELIMITER_SIGN,
     decode_detached_jws,
     normalize_qr_dob,
@@ -247,9 +248,25 @@ def parse_qr_code(
         raise QRUnsupportedVersionError(version=version_int)
 
     # 7. DOB normalization and calendar handling
-    dob_normalized = normalize_dob_for_display(raw_dob, calendar=dob_calendar)
-    if not dob_normalized:
+    raw_dob_clean = raw_dob.strip()
+    if not re.match(r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$", raw_dob_clean):
         raise QRInvalidDateError(dob_str=raw_dob)
+
+    is_confirmed_cal = (
+        bool(dob_calendar)
+        and isinstance(dob_calendar, str)
+        and dob_calendar.strip().lower() in CONFIRMED_CALENDARS
+    )
+
+    if is_confirmed_cal:
+        dob_normalized = normalize_dob_for_display(raw_dob, calendar=dob_calendar)
+        if not dob_normalized:
+            raise QRInvalidDateError(dob_str=raw_dob)
+        effective_calendar = dob_calendar.strip().lower()
+    else:
+        # Unconfirmed calendar: syntax is preserved but date is not normalized for age evaluation
+        dob_normalized = None
+        effective_calendar = "unconfirmed"
 
     # 8. Detached JWS validation per RFC 7515 Appendix F
     if ".." not in detached_jws:
@@ -313,7 +330,7 @@ def parse_qr_code(
         fan_normalized=normalize_fan_digits(raw_fan),
         date_of_birth=raw_dob,
         dob_normalized=dob_normalized,
-        dob_calendar=dob_calendar,
+        dob_calendar=effective_calendar,
     )
 
     return ParsedQRCode(

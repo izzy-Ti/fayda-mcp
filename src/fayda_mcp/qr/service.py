@@ -14,6 +14,7 @@ from fayda_mcp.claims import evaluate_checks
 from fayda_mcp.config import FaydaConfig
 from fayda_mcp.context import CallerContext
 from fayda_mcp.policy import VerificationPolicy
+from fayda_mcp.predicates import parse_age_check
 from fayda_mcp.qr.decoder import decode_and_verify_qr
 from fayda_mcp.qr.schemas import (
     QRErrorCode,
@@ -21,6 +22,7 @@ from fayda_mcp.qr.schemas import (
     QRVerificationRequest,
     QRVerificationResult,
 )
+from fayda_mcp.qr.signed_content import CONFIRMED_CALENDARS
 from fayda_mcp.qr.trust import QRTrustStore, load_trust_store_from_config
 from fayda_mcp.storage.protocols import AuditLogger, ResultRepository
 
@@ -59,9 +61,22 @@ class FaydaQRVerificationService:
         requested_checks: List[str],
         calendar: str,
     ) -> tuple[Dict[str, Any], Dict[str, str]]:
-        """Evaluate requested checks against decoded QR demographics and cryptographic status."""
+        """Evaluate requested checks against decoded QR demographics and cryptographic status.
+
+        Invariants:
+        1. credential_signature_valid is True only when detached signature verifies against trusted key.
+        2. Age predicates are evaluated ONLY from signed DOB with a confirmed calendar.
+        3. When signature is invalid or unverified, all demographic/identity checks fail closed.
+        4. Offline QR scanning never asserts live holder presence or identity.
+        """
         checks: Dict[str, Any] = {}
         reasons: Dict[str, str] = {}
+
+        is_cal_confirmed = (
+            bool(calendar)
+            and isinstance(calendar, str)
+            and calendar.strip().lower() in CONFIRMED_CALENDARS
+        )
 
         if not result.credential_signature_valid or not result.demographics:
             # When signature is invalid or unverified, all checks fail closed
@@ -78,6 +93,15 @@ class FaydaQRVerificationService:
         if "credential_signature_valid" in requested_checks:
             checks["credential_signature_valid"] = True
 
+        # Handle holder presence & identity invariants (QR-only evidence)
+        if "holder_authenticated" in requested_checks:
+            checks["holder_authenticated"] = False
+            reasons["holder_authenticated"] = "qr_scan_does_not_authenticate_holder"
+
+        if "identity_verified" in requested_checks:
+            checks["identity_verified"] = False
+            reasons["identity_verified"] = "offline_qr_alone_cannot_assert_identity"
+
         # Claims for predicate evaluation
         claims: Dict[str, Any] = {
             "sub": result.demographics.fan_normalized,
@@ -89,25 +113,42 @@ class FaydaQRVerificationService:
             "holder_authenticated": False,
         }
 
-        # Handle holder presence invariants
-        if "holder_authenticated" in requested_checks:
-            checks["holder_authenticated"] = False
-            reasons["holder_authenticated"] = "qr_scan_does_not_authenticate_holder"
+        # Evaluate remaining requested checks
+        for ch in requested_checks:
+            if ch in ("credential_signature_valid", "holder_authenticated", "identity_verified"):
+                continue
 
-        if "identity_verified" in requested_checks:
-            checks["identity_verified"] = False
-            reasons["identity_verified"] = "offline_qr_alone_cannot_assert_identity"
+            parsed_age = parse_age_check(ch)
+            if parsed_age is not None:
+                # Age checks require a confirmed calendar
+                if not is_cal_confirmed:
+                    checks[ch] = "unavailable"
+                    reasons[ch] = "unconfirmed_calendar"
+                    continue
 
-        # Predicates to evaluate via predicate engine (age rules, etc.)
-        predicate_checks = [
-            c for c in requested_checks
-            if c not in ("credential_signature_valid", "holder_authenticated", "identity_verified")
-        ]
+                if not result.demographics.dob_normalized:
+                    checks[ch] = "unavailable"
+                    reasons[ch] = "invalid_or_partial_dob"
+                    continue
 
-        if predicate_checks:
+                pred_results = evaluate_checks(
+                    claims=claims,
+                    requested_checks=[ch],
+                    timezone_name=self.config.age_evaluation_timezone,
+                    february_29_anniversary=self.config.february_29_anniversary,
+                )
+                checks.update(pred_results)
+                continue
+
+            if ch in ("phone_verified", "email_verified"):
+                checks[ch] = "unavailable"
+                reasons[ch] = "claim_not_present_in_qr"
+                continue
+
+            # General predicates evaluated via claims engine
             pred_results = evaluate_checks(
                 claims=claims,
-                requested_checks=predicate_checks,
+                requested_checks=[ch],
                 timezone_name=self.config.age_evaluation_timezone,
                 february_29_anniversary=self.config.february_29_anniversary,
             )
@@ -129,13 +170,19 @@ class FaydaQRVerificationService:
                 self.policy.validate_checks(request.checks)
 
         # 2. Determine calendar convention
-        calendar = request.dob_calendar or self.config.dob_source_calendar or "gregorian"
+        calendar_candidate = request.dob_calendar if request.dob_calendar is not None else (
+            self.config.dob_source_calendar if self.config else "gregorian"
+        )
+        if calendar_candidate and isinstance(calendar_candidate, str) and calendar_candidate.strip().lower() in CONFIRMED_CALENDARS:
+            confirmed_calendar = calendar_candidate.strip().lower()
+        else:
+            confirmed_calendar = "unconfirmed"
 
         # 3. Decode and verify cryptographic RS256 signature
         raw_result = decode_and_verify_qr(
             raw_text=request.qr_text,
             trust_store=self.trust_store,
-            dob_calendar=calendar,
+            dob_calendar=confirmed_calendar,
             include_demographics=True,
         )
 
@@ -144,7 +191,7 @@ class FaydaQRVerificationService:
         evaluated_checks, reasons = self._evaluate_qr_checks(
             result=raw_result,
             requested_checks=requested,
-            calendar=calendar,
+            calendar=confirmed_calendar,
         )
 
         # 5. Determine high-level outcome status

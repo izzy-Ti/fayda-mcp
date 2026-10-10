@@ -26,6 +26,7 @@ QR_DELIMITERS = (
 )
 
 from fayda_mcp.qr.signed_content import (
+    CONFIRMED_CALENDARS,
     DELIMITER_SIGN,
     build_jws_signing_input,
     decode_detached_jws,
@@ -127,5 +128,6 @@ __all__ = [
     "verify_detached_qr_signature",
     "decode_and_verify_qr",
     "FaydaQRVerificationService",
+    "CONFIRMED_CALENDARS",
 ]
 

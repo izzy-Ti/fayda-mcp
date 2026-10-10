@@ -89,13 +89,24 @@ def build_jws_signing_input(header_b64: str, payload_bytes: bytes) -> bytes:
     return f"{header_b64}.{payload_b64}".encode("ascii")
 
 
-def normalize_qr_dob(raw_dob: str, calendar: str = "gregorian") -> Optional[str]:
+CONFIRMED_CALENDARS = ("gregorian", "ethiopic", "ec", "ethiopian")
+
+
+def normalize_qr_dob(raw_dob: str, calendar: Optional[str] = "gregorian") -> Optional[str]:
     """Normalize QR DOB string (YYYY/MM/DD) into ISO YYYY-MM-DD.
 
     Respects confirmed calendar settings:
     - 'gregorian' (default): normalizes directly to Gregorian ISO 8601 YYYY-MM-DD.
-    - 'ethiopic': converts from Ethiopian calendar (EC) using Fayda calendar converters.
+    - 'ethiopic' / 'ec' / 'ethiopian': converts from Ethiopian calendar (EC) using Fayda calendar converters.
+    - Returns None if the calendar is unconfirmed, unsupported, or if the date string is invalid.
     """
+    if not calendar or not isinstance(calendar, str):
+        return None
+
+    cal_clean = calendar.strip().lower()
+    if cal_clean not in CONFIRMED_CALENDARS:
+        return None
+
     if not raw_dob or not isinstance(raw_dob, str):
         return None
 
@@ -106,13 +117,17 @@ def normalize_qr_dob(raw_dob: str, calendar: str = "gregorian") -> Optional[str]
 
     year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
 
-    if calendar.lower() in ("ethiopic", "ec"):
+    if cal_clean in ("ethiopic", "ec", "ethiopian"):
         from fayda_mcp.localization.calendars import normalize_dob_with_source
-        return normalize_dob_with_source(f"{year:04d}-{month:02d}-{day:02d}", source_calendar="ethiopic")
+
+        return normalize_dob_with_source(
+            f"{year:04d}-{month:02d}-{day:02d}", source_calendar="ethiopic"
+        )
 
     # Gregorian validation
     try:
         from datetime import date
+
         d = date(year, month, day)
         return d.isoformat()
     except ValueError:

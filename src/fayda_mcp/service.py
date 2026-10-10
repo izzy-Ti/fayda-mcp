@@ -69,6 +69,7 @@ class FaydaVerificationService:
         key_provider: Optional[KeyProvider] = None,
         audit: Optional[AuditLogger] = None,
         http_client: Optional[httpx.AsyncClient] = None,
+        qr_success_hook: Optional[Any] = None,
     ) -> None:
         self.config = config
         self.sessions = sessions
@@ -84,6 +85,7 @@ class FaydaVerificationService:
             policy=self.policy,
             results=self.results,
             audit=self.audit,
+            success_hook=qr_success_hook,
         )
 
     async def __aenter__(self) -> "FaydaVerificationService":
@@ -635,6 +637,7 @@ class FaydaVerificationService:
         idempotency_key: Optional[str] = None,
         dob_calendar: Optional[str] = None,
         include_demographics: bool = False,
+        success_hook: Optional[Any] = None,
     ) -> Any:
         """Submit a Fayda QR code for offline verification, binding caller, purpose, and application user."""
         return await self.qr_service.submit_qr_verification(
@@ -646,6 +649,7 @@ class FaydaVerificationService:
             idempotency_key=idempotency_key,
             dob_calendar=dob_calendar,
             include_demographics=include_demographics,
+            success_hook=success_hook,
         )
 
     async def get_qr_verification_result(

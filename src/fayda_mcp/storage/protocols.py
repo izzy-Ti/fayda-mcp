@@ -68,7 +68,7 @@ class ResultRepository(Protocol):
     async def finalize_result(
         self,
         request_id: str,
-        result: VerificationResult,
+        result: Union[VerificationResult, Any],
         ttl_seconds: int,
         audit_event: Optional[Dict[str, Any]] = None,
     ) -> bool:
@@ -80,7 +80,7 @@ class ResultRepository(Protocol):
         """
         ...
 
-    async def save_result(self, request_id: str, result: VerificationResult, ttl_seconds: int) -> None:
+    async def save_result(self, request_id: str, result: Union[VerificationResult, Any], ttl_seconds: int) -> None:
         """Store final evaluated verification result."""
         ...
 

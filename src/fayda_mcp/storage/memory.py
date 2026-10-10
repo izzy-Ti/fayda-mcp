@@ -153,7 +153,7 @@ class MemoryResultRepository:
     async def finalize_result(
         self,
         request_id: str,
-        result: VerificationResult,
+        result: Union[VerificationResult, Any],
         ttl_seconds: int = 900,
         audit_event: Optional[Dict[str, Any]] = None,
     ) -> bool:
@@ -178,6 +178,27 @@ class MemoryResultRepository:
 
             # Atomically update request status and purge sensitive auth_url
             data["status"] = result.status
+            if hasattr(result, "checks") and result.checks:
+                data["checks"] = result.checks
+            if hasattr(result, "reasons") and result.reasons:
+                data["reasons"] = result.reasons
+            if hasattr(result, "times") and result.times:
+                data["times"] = result.times
+            if hasattr(result, "verified_at") and result.verified_at:
+                data["verified_at"] = result.verified_at
+            if hasattr(result, "evidence_ref") and result.evidence_ref:
+                data["evidence_ref"] = result.evidence_ref
+            if hasattr(result, "key_reference") and result.key_reference:
+                data["key_reference"] = result.key_reference
+            if hasattr(result, "method") and result.method:
+                data["method"] = result.method
+            if hasattr(result, "profile") and result.profile:
+                data["profile"] = result.profile
+            if hasattr(result, "policy_version") and result.policy_version:
+                data["policy_version"] = result.policy_version
+            if hasattr(result, "credential_signature_valid"):
+                data["credential_signature_valid"] = result.credential_signature_valid
+
             data.pop("authorization_url", None)
             data.pop("auth_url", None)
             self._requests[request_id] = (data, req_expires)
@@ -186,7 +207,7 @@ class MemoryResultRepository:
             self._results[request_id] = (result, res_expires)
             return True
 
-    async def save_result(self, request_id: str, result: VerificationResult, ttl_seconds: int = 900) -> None:
+    async def save_result(self, request_id: str, result: Union[VerificationResult, Any], ttl_seconds: int = 900) -> None:
         async with self._lock:
             expires_at = time.time() + ttl_seconds
             self._results[request_id] = (result, expires_at)

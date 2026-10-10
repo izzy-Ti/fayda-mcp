@@ -551,3 +551,63 @@ class QRVerificationRequest(BaseModel):
         default=False,
         description="Whether to include full demographic attributes in the result (requires permission)",
     )
+
+
+class HostUserSuccessContext(BaseModel):
+    """Context payload passed to the explicit host users-table success hook upon verified completion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    application_user_ref: Optional[str] = Field(
+        default=None,
+        description="Host application user identifier bound to the verification",
+    )
+    request_id: str = Field(
+        ...,
+        description="Unique verification request identifier",
+    )
+    status: Literal["verified"] = Field(
+        default="verified",
+        description="Verification outcome status, strictly 'verified'",
+    )
+    checks: Dict[str, CheckOutcomeType] = Field(
+        default_factory=dict,
+        description="Evaluated boolean checks (e.g. credential_signature_valid, age_over_18)",
+    )
+    verified_at: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 UTC verification completion timestamp",
+    )
+    evidence_ref: Optional[str] = Field(
+        default=None,
+        description="Deterministic opaque evidence record digest",
+    )
+    method: Literal["qr_offline"] = Field(
+        default="qr_offline",
+        description="Verification method identifier",
+    )
+    profile: Optional[str] = Field(
+        default="v4",
+        description="QR specification profile version",
+    )
+    key_reference: Optional[str] = Field(
+        default=None,
+        description="Cryptographic public key reference or thumbprint",
+    )
+    policy_version: Optional[str] = Field(
+        default="v1",
+        description="Evaluated policy version",
+    )
+    purpose: Optional[str] = Field(
+        default=None,
+        description="Bound verification purpose",
+    )
+    tenant_id: str = Field(
+        ...,
+        description="Authenticated caller tenant identifier",
+    )
+    principal_id: str = Field(
+        ...,
+        description="Authenticated caller principal identifier",
+    )
+

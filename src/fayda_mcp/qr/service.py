@@ -5,19 +5,28 @@ signature verification, policy enforcement, privacy-filtered predicate evaluatio
 and audit trail recording.
 """
 
+import asyncio
 from datetime import datetime, timezone
 import hashlib
-from typing import Any, Dict, List, Optional, Sequence, Union
+import inspect
+import json
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
 from uuid import uuid4
 
 from fayda_mcp.claims import evaluate_checks
 from fayda_mcp.config import FaydaConfig
 from fayda_mcp.context import CallerContext
-from fayda_mcp.exceptions import AuthorizationError, IdempotencyConflictError
+from fayda_mcp.exceptions import (
+    AuthorizationError,
+    HostSuccessHookError,
+    IdempotencyConflictError,
+    InvalidStateError,
+)
 from fayda_mcp.policy import VerificationPolicy
 from fayda_mcp.predicates import parse_age_check
 from fayda_mcp.qr.decoder import decode_and_verify_qr
 from fayda_mcp.qr.schemas import (
+    HostUserSuccessContext,
     QRAgentVerificationResult,
     QRErrorCode,
     QREvidence,
@@ -30,6 +39,24 @@ from fayda_mcp.qr.trust import QRTrustStore, load_trust_store_from_config
 from fayda_mcp.storage.protocols import AuditLogger, ResultRepository
 
 
+def compute_qr_request_fingerprint(
+    purpose: str,
+    checks: Sequence[str],
+    application_user_ref: Optional[str] = None,
+    qr_text: Optional[str] = None,
+) -> str:
+    """Generate deterministic SHA-256 fingerprint of QR verification request parameters for scoped idempotency."""
+    qr_hash = hashlib.sha256(qr_text.encode("utf-8")).hexdigest() if qr_text else ""
+    payload = {
+        "purpose": str(purpose or ""),
+        "checks": sorted(str(c) for c in checks),
+        "application_user_ref": str(application_user_ref or ""),
+        "qr_hash": qr_hash,
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
 class FaydaQRVerificationService:
     """Orchestrates offline Fayda National ID QR verification and policy evaluation."""
 
@@ -40,6 +67,9 @@ class FaydaQRVerificationService:
         policy: Optional[VerificationPolicy] = None,
         results: Optional[ResultRepository] = None,
         audit: Optional[AuditLogger] = None,
+        success_hook: Optional[
+            Callable[[HostUserSuccessContext], Union[None, Awaitable[None]]]
+        ] = None,
     ):
         self.config = config or FaydaConfig(
             client_id="default_qr_verifier",
@@ -57,6 +87,44 @@ class FaydaQRVerificationService:
         self.policy = policy
         self.results = results
         self.audit = audit
+        self.success_hook = success_hook
+
+    def set_success_hook(
+        self,
+        hook: Optional[Callable[[HostUserSuccessContext], Union[None, Awaitable[None]]]],
+    ) -> None:
+        """Register or update the host users-table success hook."""
+        self.success_hook = hook
+
+    async def _invoke_success_hook(
+        self,
+        hook: Callable[[HostUserSuccessContext], Union[None, Awaitable[None]]],
+        context: HostUserSuccessContext,
+    ) -> None:
+        """Invoke host success hook safely, supporting both sync and async callables."""
+        try:
+            res = hook(context)
+            if inspect.isawaitable(res):
+                await res
+        except Exception as exc:
+            if self.audit:
+                await self.audit.record_event(
+                    event_type="host_success_hook_failed",
+                    safe_metadata={
+                        "request_id": context.request_id,
+                        "tenant_id": context.tenant_id,
+                        "principal_id": context.principal_id,
+                        "application_user_ref": context.application_user_ref,
+                        "error": str(exc),
+                    },
+                )
+            raise HostSuccessHookError(
+                f"Host users-table success hook failed: {exc}",
+                details={
+                    "request_id": context.request_id,
+                    "application_user_ref": context.application_user_ref,
+                },
+            ) from exc
 
     def _evaluate_qr_checks(
         self,
@@ -280,14 +348,29 @@ class FaydaQRVerificationService:
                 reasons=record.get("reasons", {}),
             )
 
-        verified_at = record.get("verified_at")
-        times = dict(record.get("times", {}))
+        def _to_iso_str(val: Any) -> Optional[str]:
+            if val is None:
+                return None
+            if isinstance(val, (int, float)):
+                try:
+                    return datetime.fromtimestamp(float(val), tz=timezone.utc).isoformat()
+                except Exception:
+                    return str(val)
+            return str(val)
+
+        verified_at = _to_iso_str(record.get("verified_at"))
+        times: Dict[str, Optional[str]] = {}
+        if isinstance(record.get("times"), dict):
+            for k, v in record["times"].items():
+                times[k] = _to_iso_str(v)
         if verified_at and "verified_at" not in times:
             times["verified_at"] = verified_at
         if record.get("created_at") and "created_at" not in times:
-            times["created_at"] = record.get("created_at")
+            times["created_at"] = _to_iso_str(record.get("created_at"))
         if record.get("expires_at") and "expires_at" not in times:
-            times["expires_at"] = record.get("expires_at")
+            times["expires_at"] = _to_iso_str(record.get("expires_at"))
+        if record.get("session_expires_at") and "session_expires_at" not in times:
+            times["session_expires_at"] = _to_iso_str(record.get("session_expires_at"))
 
         profile = record.get("profile") or f"v{qr_version}"
 
@@ -322,16 +405,20 @@ class FaydaQRVerificationService:
         idempotency_key: Optional[str] = None,
         dob_calendar: Optional[str] = None,
         include_demographics: bool = False,
+        success_hook: Optional[
+            Callable[[HostUserSuccessContext], Union[None, Awaitable[None]]]
+        ] = None,
     ) -> QRVerificationResult:
         """Submit a Fayda QR code for offline verification, binding caller, purpose, and application user.
 
         Workflow:
         1. Binds caller context (tenant_id, principal_id), business purpose, and host application user.
-        2. Idempotency deduplication: retries with identical idempotency key return cached result;
-           conflicting parameters raise IdempotencyConflictError.
-        3. Parses unchanged scanner text and cryptographically verifies detached RS256 signature.
-        4. Evaluates requested policy checks fail-closed under confirmed calendar.
-        5. Persists minimal evidence in Neon / ResultRepository and records non-PII audit event.
+        2. Idempotency deduplication: deterministic fingerprinting detects retries and conflicts.
+        3. Atomic reservation: reserves request record preventing concurrent duplicate workflows.
+        4. Parses unchanged scanner text and cryptographically verifies detached RS256 signature.
+        5. Evaluates requested policy checks fail-closed under confirmed calendar.
+        6. Persists minimal evidence and atomically finalizes result in ResultRepository.
+        7. Explicit host users-table success hook: invokes registered hook strictly on verified outcomes.
         """
         ctx = context or CallerContext()
 
@@ -352,7 +439,19 @@ class FaydaQRVerificationService:
             req_include_demo = include_demographics
             raw_text = qr_text
 
-        # 1. Idempotency lookup
+        effective_hook = success_hook if success_hook is not None else self.success_hook
+        fingerprint = compute_qr_request_fingerprint(
+            purpose=req_purpose,
+            checks=req_checks,
+            application_user_ref=req_user,
+            qr_text=raw_text,
+        )
+
+        ttl_seconds = self.config.result_ttl_seconds if self.config else 900
+        now_iso = datetime.now(timezone.utc).isoformat()
+        actual_req_id = f"qr_{uuid4().hex[:16]}"
+
+        # 1. Scoped idempotency check & atomic reservation
         if req_idemp and self.results:
             existing = await self.results.find_by_idempotency_key(
                 tenant_id=ctx.tenant_id,
@@ -360,14 +459,73 @@ class FaydaQRVerificationService:
                 idempotency_key=req_idemp,
             )
             if existing:
+                existing_fp = existing.get("request_fingerprint")
                 if (
-                    existing.get("purpose") != req_purpose
+                    (existing_fp and existing_fp != fingerprint)
+                    or existing.get("purpose") != req_purpose
                     or existing.get("application_user_ref") != req_user
                 ):
                     raise IdempotencyConflictError(
                         f"Idempotency key '{req_idemp}' has already been used with different parameters"
                     )
-                return self._result_from_record(existing)
+                if existing.get("status") in (
+                    "verified",
+                    "rejected",
+                    "failed",
+                    "cancelled",
+                    "expired",
+                    "invalid_signature",
+                    "malformed_input",
+                    "untrusted_key",
+                ):
+                    # Idempotent replay: return cached result without re-invoking success hook
+                    return self._result_from_record(existing)
+
+            # Atomically reserve request
+            reservation_data = {
+                "request_id": actual_req_id,
+                "tenant_id": ctx.tenant_id,
+                "principal_id": ctx.principal_id,
+                "application_user_ref": req_user,
+                "idempotency_key": req_idemp,
+                "request_fingerprint": fingerprint,
+                "purpose": req_purpose,
+                "checks": req_checks,
+                "status": "initializing",
+                "method": "qr_offline",
+                "created_at": now_iso,
+            }
+            reserved, existing_or_reserved = await self.results.reserve_request(
+                request_id=actual_req_id,
+                data=reservation_data,
+                ttl_seconds=ttl_seconds,
+            )
+            if not reserved:
+                existing_fp = existing_or_reserved.get("request_fingerprint")
+                if (
+                    (existing_fp and existing_fp != fingerprint)
+                    or existing_or_reserved.get("purpose") != req_purpose
+                    or existing_or_reserved.get("application_user_ref") != req_user
+                ):
+                    raise IdempotencyConflictError(
+                        f"Idempotency key '{req_idemp}' has already been used with different parameters"
+                    )
+                if existing_or_reserved.get("status") != "initializing":
+                    return self._result_from_record(existing_or_reserved)
+
+                # Wait briefly if another worker is currently initializing
+                current_rec = existing_or_reserved
+                for _ in range(40):
+                    await asyncio.sleep(0.05)
+                    poll_rec = await self.results.get_request(current_rec["request_id"])
+                    if poll_rec and poll_rec.get("status") != "initializing":
+                        current_rec = poll_rec
+                        break
+                if current_rec.get("status") != "initializing":
+                    return self._result_from_record(current_rec)
+                actual_req_id = existing_or_reserved.get("request_id", actual_req_id)
+            else:
+                actual_req_id = existing_or_reserved.get("request_id", actual_req_id)
 
         # 2. Build verified request model
         request = QRVerificationRequest(
@@ -384,32 +542,39 @@ class FaydaQRVerificationService:
         result = self.verify_qr_sync(request, context=ctx)
 
         # Ensure binding attributes are populated
-        req_id = result.request_id or f"qr_{uuid4().hex[:16]}"
-        now_iso = datetime.now(timezone.utc).isoformat()
+        policy_version = result.policy_version or (self.policy.version if self.policy else "v1")
+        key_ref = result.evidence.key_thumbprint if result.evidence else None
+        profile = result.profile or (
+            f"v{result.evidence.qr_version}"
+            if result.evidence and result.evidence.qr_version
+            else "v4"
+        )
+        verified_at = result.verified_at or now_iso
+
         result = result.model_copy(
             update={
-                "request_id": req_id,
+                "request_id": actual_req_id,
                 "application_user_ref": req_user,
                 "purpose": req_purpose,
-                "verified_at": result.verified_at or now_iso,
-                "policy_version": self.policy.version if self.policy else "v1",
+                "verified_at": verified_at,
+                "policy_version": policy_version,
+                "profile": profile,
+                "key_reference": key_ref,
+                "evidence_ref": result.evidence.evidence_ref if result.evidence else None,
             }
         )
 
-        # 4. Persist minimal evidence in ResultRepository (Neon / Memory)
+        # 4. Persist minimal evidence and atomically finalize in ResultRepository
         if self.results:
-            ttl_seconds = self.config.result_ttl_seconds if self.config else 900
-            key_ref = result.evidence.key_thumbprint if result.evidence else None
-            profile = result.profile or (f"v{result.evidence.qr_version}" if result.evidence and result.evidence.qr_version else "v4")
-            policy_version = result.policy_version or (self.policy.version if self.policy else "v1")
             record_data = {
-                "request_id": req_id,
+                "request_id": actual_req_id,
                 "tenant_id": ctx.tenant_id,
                 "principal_id": ctx.principal_id,
                 "purpose": req_purpose,
                 "application_user_ref": req_user,
                 "idempotency_key": req_idemp,
-                "status": result.status,
+                "request_fingerprint": fingerprint,
+                "status": "initializing",
                 "credential_signature_valid": result.credential_signature_valid,
                 "holder_authenticated": False,
                 "identity_verified": False,
@@ -421,27 +586,50 @@ class FaydaQRVerificationService:
                 "key_reference": key_ref,
                 "qr_version": result.evidence.qr_version if result.evidence else 4,
                 "profile": profile,
-                "verified_at": result.verified_at,
+                "verified_at": verified_at,
                 "policy_version": policy_version,
                 "method": "qr_offline",
                 "created_at": now_iso,
             }
             await self.results.save_request(
-                request_id=req_id,
+                request_id=actual_req_id,
                 data=record_data,
                 ttl_seconds=ttl_seconds,
             )
 
+            audit_payload = None
+            if not self.audit:
+                audit_payload = {
+                    "event_type": "qr_verification",
+                    "metadata": {
+                        "request_id": actual_req_id,
+                        "status": result.status,
+                        "method": "qr_offline",
+                        "profile": profile,
+                        "key_reference": key_ref,
+                        "policy_version": policy_version,
+                    },
+                }
+
+            finalized = await self.results.finalize_result(
+                request_id=actual_req_id,
+                result=result,
+                ttl_seconds=ttl_seconds,
+                audit_event=audit_payload,
+            )
+            if not finalized:
+                existing_rec = await self.results.get_request(actual_req_id)
+                if existing_rec and existing_rec.get("status") != "initializing":
+                    return self._result_from_record(existing_rec)
+                raise InvalidStateError("QR verification request has already been finalized or cancelled")
+
         # 5. Persist audit log event
         if self.audit:
             evidence_ref = result.evidence.evidence_ref if result.evidence else None
-            key_ref = result.evidence.key_thumbprint if result.evidence else None
-            profile = result.profile or (f"v{result.evidence.qr_version}" if result.evidence and result.evidence.qr_version else "v4")
-            policy_version = result.policy_version or (self.policy.version if self.policy else "v1")
             await self.audit.record_event(
                 event_type="qr_verification",
                 safe_metadata={
-                    "request_id": req_id,
+                    "request_id": actual_req_id,
                     "tenant_id": ctx.tenant_id,
                     "principal_id": ctx.principal_id,
                     "purpose": req_purpose,
@@ -458,6 +646,26 @@ class FaydaQRVerificationService:
                     "policy_version": policy_version,
                 },
             )
+
+        # 6. Explicit Host Users-Table Success Hook
+        if result.status == "verified" and result.credential_signature_valid is True:
+            if effective_hook is not None:
+                hook_context = HostUserSuccessContext(
+                    application_user_ref=req_user,
+                    request_id=actual_req_id,
+                    status="verified",
+                    checks=result.checks,
+                    verified_at=result.verified_at,
+                    evidence_ref=result.evidence.evidence_ref if result.evidence else None,
+                    method="qr_offline",
+                    profile=profile,
+                    key_reference=key_ref,
+                    policy_version=policy_version,
+                    purpose=req_purpose,
+                    tenant_id=ctx.tenant_id,
+                    principal_id=ctx.principal_id,
+                )
+                await self._invoke_success_hook(effective_hook, hook_context)
 
         return result
 

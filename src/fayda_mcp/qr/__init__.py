@@ -53,6 +53,7 @@ from fayda_mcp.qr.schemas import (
     QRVerificationError,
     QRVerificationResult,
     QRVerificationRequest,
+    HostUserSuccessContext,
     filter_agent_output,
 )
 
@@ -115,6 +116,7 @@ __all__ = [
     "QRAgentVerificationResult",
     "filter_agent_output",
     "QRVerificationRequest",
+    "HostUserSuccessContext",
     "ScannerInput",
     "validate_scanner_text",
     "ingest_scanner_text",

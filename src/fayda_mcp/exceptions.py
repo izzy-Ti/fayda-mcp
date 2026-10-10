@@ -99,3 +99,15 @@ class IdempotencyConflictError(FaydaMCPError):
         details: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(message=message, code="idempotency_conflict", details=details)
+
+
+class HostSuccessHookError(FaydaMCPError):
+    """Raised when the host application's users-table success hook encounters an unhandled failure."""
+
+    def __init__(
+        self,
+        message: str = "Host users-table success hook failed",
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message=message, code="host_success_hook_error", details=details)
+

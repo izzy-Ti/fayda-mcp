@@ -652,9 +652,11 @@ class FaydaVerificationService:
         self,
         request_id: str,
         context: Optional[CallerContext] = None,
+        filter_output: bool = False,
     ) -> Any:
         """Retrieve a stored QR verification result by request ID, enforcing caller ownership."""
         return await self.qr_service.get_qr_verification_result(
             request_id=request_id,
             context=context,
+            filter_output=filter_output,
         )

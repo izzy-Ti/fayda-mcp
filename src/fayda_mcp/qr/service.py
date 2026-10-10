@@ -18,10 +18,12 @@ from fayda_mcp.policy import VerificationPolicy
 from fayda_mcp.predicates import parse_age_check
 from fayda_mcp.qr.decoder import decode_and_verify_qr
 from fayda_mcp.qr.schemas import (
+    QRAgentVerificationResult,
     QRErrorCode,
     QREvidence,
     QRVerificationRequest,
     QRVerificationResult,
+    filter_agent_output,
 )
 from fayda_mcp.qr.signed_content import CONFIRMED_CALENDARS
 from fayda_mcp.qr.trust import QRTrustStore, load_trust_store_from_config
@@ -224,11 +226,15 @@ class FaydaQRVerificationService:
             )
 
         now_iso = datetime.now(timezone.utc).isoformat()
+        verified_ts = evidence.verified_at if evidence and evidence.verified_at else now_iso
+        times = {"verified_at": verified_ts}
         final_result = QRVerificationResult(
             request_id=f"qr_{uuid4().hex[:16]}",
             application_user_ref=request.application_user_ref,
             purpose=request.purpose,
-            verified_at=evidence.verified_at if evidence and evidence.verified_at else now_iso,
+            verified_at=verified_ts,
+            times=times,
+            method="qr_offline",
             policy_version=self.policy.version if self.policy else "v1",
             status=status,
             credential_signature_valid=raw_result.credential_signature_valid,
@@ -261,11 +267,22 @@ class FaydaQRVerificationService:
                 reasons=record.get("reasons", {}),
             )
 
+        verified_at = record.get("verified_at")
+        times = dict(record.get("times", {}))
+        if verified_at and "verified_at" not in times:
+            times["verified_at"] = verified_at
+        if record.get("created_at") and "created_at" not in times:
+            times["created_at"] = record.get("created_at")
+        if record.get("expires_at") and "expires_at" not in times:
+            times["expires_at"] = record.get("expires_at")
+
         return QRVerificationResult(
             request_id=record.get("request_id"),
             application_user_ref=record.get("application_user_ref"),
             purpose=record.get("purpose"),
-            verified_at=record.get("verified_at"),
+            verified_at=verified_at,
+            times=times,
+            method="qr_offline",
             policy_version=record.get("policy_version"),
             status=record.get("status", "verified"),
             credential_signature_valid=bool(record.get("credential_signature_valid", True)),
@@ -378,6 +395,7 @@ class FaydaQRVerificationService:
                 "identity_verified": False,
                 "checks": result.checks,
                 "reasons": result.reasons,
+                "times": result.times,
                 "evidence_ref": result.evidence.evidence_ref if result.evidence else None,
                 "key_thumbprint": result.evidence.key_thumbprint if result.evidence else None,
                 "qr_version": result.evidence.qr_version if result.evidence else 4,
@@ -432,8 +450,15 @@ class FaydaQRVerificationService:
         self,
         request_id: str,
         context: Optional[CallerContext] = None,
-    ) -> Optional[QRVerificationResult]:
-        """Retrieve a stored QR verification result by request ID, enforcing caller ownership."""
+        filter_output: bool = False,
+    ) -> Optional[Union[QRVerificationResult, QRAgentVerificationResult]]:
+        """Retrieve a stored QR verification result by request ID, enforcing caller ownership.
+
+        Args:
+            request_id: Unique opaque verification request identifier.
+            context: Optional caller context for tenant and principal authorization.
+            filter_output: If True, returns minimal QRAgentVerificationResult excluding demographics, photo, and signature.
+        """
         if not self.results:
             return None
         rec = await self.results.get_request(request_id)
@@ -441,7 +466,10 @@ class FaydaQRVerificationService:
             return None
         ctx = context or CallerContext()
         self._authorize_caller(rec, ctx)
-        return self._result_from_record(rec)
+        res = self._result_from_record(rec)
+        if filter_output:
+            return filter_agent_output(res)
+        return res
 
     async def verify_qr(
         self,

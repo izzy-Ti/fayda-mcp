@@ -36,6 +36,7 @@ from fayda_mcp.qr.signed_content import (
 from fayda_mcp.qr.schemas import (
     MAX_QR_TEXT_BYTES,
     ParsedQRCode,
+    QRAgentVerificationResult,
     QRDelimiterError,
     QRDemographics,
     QRErrorCode,
@@ -52,6 +53,7 @@ from fayda_mcp.qr.schemas import (
     QRVerificationError,
     QRVerificationResult,
     QRVerificationRequest,
+    filter_agent_output,
 )
 
 from fayda_mcp.qr.parser import (
@@ -110,6 +112,8 @@ __all__ = [
     "QREvidence",
     "ParsedQRCode",
     "QRVerificationResult",
+    "QRAgentVerificationResult",
+    "filter_agent_output",
     "QRVerificationRequest",
     "ScannerInput",
     "validate_scanner_text",

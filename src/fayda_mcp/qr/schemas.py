@@ -266,6 +266,10 @@ class QRVerificationResult(BaseModel):
         ...,
         description="High-level verification status outcome",
     )
+    method: Literal["qr_offline"] = Field(
+        default="qr_offline",
+        description="Verification method identifier",
+    )
     credential_signature_valid: bool = Field(
         ...,
         description="Cryptographic signature verification status",
@@ -289,6 +293,10 @@ class QRVerificationResult(BaseModel):
     reasons: Dict[str, str] = Field(
         default_factory=dict,
         description="Safe reason codes for unavailable or failed checks",
+    )
+    times: Dict[str, Optional[str]] = Field(
+        default_factory=dict,
+        description="Lifecycle timestamps (e.g. verified_at, expires_at, created_at)",
     )
     request_id: Optional[str] = Field(
         default=None,
@@ -317,6 +325,166 @@ class QRVerificationResult(BaseModel):
     error_code: Optional[str] = Field(
         default=None,
         description="Machine-readable safe error code",
+    )
+
+    def to_agent_output(self, expires_at: Optional[str] = None) -> "QRAgentVerificationResult":
+        """Filter verification result into safe agent output, stripping demographics, photo, and signature."""
+        return filter_agent_output(self, expires_at=expires_at)
+
+
+class QRAgentVerificationResult(BaseModel):
+    """Minimal filtered agent output for QR verification.
+
+    Conforms to Task 16 privacy requirements:
+    - Returns status, method, checks, times, and safe reasons.
+    - Strictly excludes demographics, photo, and signature.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal[
+        "verified",
+        "unverified",
+        "invalid_signature",
+        "malformed_input",
+        "untrusted_key",
+        "rejected",
+        "incomplete",
+        "error",
+    ] = Field(..., description="High-level verification status outcome")
+    method: Literal["qr_offline"] = Field(
+        default="qr_offline",
+        description="Verification method identifier",
+    )
+    checks: Dict[str, CheckOutcomeType] = Field(
+        default_factory=dict,
+        description="Evaluated privacy-preserving boolean checks (e.g. credential_signature_valid, age_over_18)",
+    )
+    times: Dict[str, Optional[str]] = Field(
+        default_factory=dict,
+        description="Lifecycle timestamps (e.g. verified_at, expires_at, created_at)",
+    )
+    reasons: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Safe reason codes for unavailable or failed checks",
+    )
+    request_id: str = Field(..., description="Unique opaque verification request identifier")
+    credential_signature_valid: bool = Field(
+        ...,
+        description="Cryptographic signature verification status predicate",
+    )
+    holder_authenticated: Literal[False] = Field(
+        default=False,
+        description="Strictly False for QR scans without live holder authentication",
+    )
+    identity_verified: Literal[False] = Field(
+        default=False,
+        description="Strictly False for standalone QR scans",
+    )
+    verified_at: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 UTC timestamp of verification completion",
+    )
+    expires_at: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 UTC timestamp when result expires",
+    )
+    application_user_ref: Optional[str] = Field(
+        default=None,
+        description="Bound host application user reference",
+    )
+    purpose: Optional[str] = Field(
+        default=None,
+        description="Bound business purpose",
+    )
+    policy_version: Optional[str] = Field(
+        default=None,
+        description="Evaluated policy version",
+    )
+    evidence_ref: Optional[str] = Field(
+        default=None,
+        description="Deterministic opaque digest of the evidence record",
+    )
+    error: Optional[str] = Field(
+        default=None,
+        description="Safe, non-sensitive error message if verification failed",
+    )
+    error_code: Optional[str] = Field(
+        default=None,
+        description="Machine-readable safe error code",
+    )
+
+
+def filter_agent_output(
+    result: Union[QRVerificationResult, Dict[str, Any]],
+    expires_at: Optional[str] = None,
+) -> QRAgentVerificationResult:
+    """Filter verification results into minimal safe agent output.
+
+    Guarantees:
+    - Retains: status, method, checks, times, safe reasons, and opaque bindings.
+    - Excludes: demographics, photo, and signature.
+    """
+    if isinstance(result, QRVerificationResult):
+        verified_at = result.verified_at
+        exp_at = expires_at
+        times_dict = dict(result.times) if result.times else {}
+        if verified_at and "verified_at" not in times_dict:
+            times_dict["verified_at"] = verified_at
+        if exp_at and "expires_at" not in times_dict:
+            times_dict["expires_at"] = exp_at
+
+        evidence_ref = result.evidence.evidence_ref if result.evidence else None
+
+        return QRAgentVerificationResult(
+            request_id=result.request_id or "",
+            status=result.status,
+            method="qr_offline",
+            checks=dict(result.checks),
+            reasons=dict(result.reasons),
+            times=times_dict,
+            verified_at=verified_at,
+            expires_at=exp_at,
+            credential_signature_valid=result.credential_signature_valid,
+            holder_authenticated=False,
+            identity_verified=False,
+            application_user_ref=result.application_user_ref,
+            purpose=result.purpose,
+            policy_version=result.policy_version,
+            evidence_ref=evidence_ref,
+            error=result.error,
+            error_code=result.error_code,
+        )
+
+    # Dictionary input (e.g. from repository or cache)
+    verified_at = result.get("verified_at")
+    exp_at = expires_at or result.get("expires_at")
+    times_dict = dict(result.get("times", {}))
+    if verified_at and "verified_at" not in times_dict:
+        times_dict["verified_at"] = verified_at
+    if exp_at and "expires_at" not in times_dict:
+        times_dict["expires_at"] = exp_at
+    if result.get("created_at") and "created_at" not in times_dict:
+        times_dict["created_at"] = result.get("created_at")
+
+    return QRAgentVerificationResult(
+        request_id=str(result.get("request_id", "")),
+        status=result.get("status", "unverified"),
+        method="qr_offline",
+        checks=dict(result.get("checks", {})),
+        reasons=dict(result.get("reasons", {})),
+        times=times_dict,
+        verified_at=verified_at,
+        expires_at=exp_at,
+        credential_signature_valid=bool(result.get("credential_signature_valid", False)),
+        holder_authenticated=False,
+        identity_verified=False,
+        application_user_ref=result.get("application_user_ref"),
+        purpose=result.get("purpose"),
+        policy_version=result.get("policy_version"),
+        evidence_ref=result.get("evidence_ref"),
+        error=result.get("error"),
+        error_code=result.get("error_code"),
     )
 
 

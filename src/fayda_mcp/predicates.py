@@ -225,6 +225,30 @@ def _email_evaluator(
     )
 
 
+def _sig_parser(check_name: str) -> ParsedPredicate:
+    if check_name != "credential_signature_valid":
+        raise ValueError(f"Invalid check name: '{check_name}'")
+    return ParsedPredicate(name="credential_signature_valid", target_claim="credential_signature_valid")
+
+
+def _sig_availability_rule(
+    claims: Dict[str, Any], parsed: ParsedPredicate
+) -> Tuple[bool, Optional[str]]:
+    val = claims.get("credential_signature_valid")
+    if val is None:
+        return False, "missing_signature_claim"
+    return True, None
+
+
+def _sig_evaluator(
+    claims: Dict[str, Any], context: PredicateContext, parsed: ParsedPredicate
+) -> PredicateEvaluation:
+    is_avail, reason = _sig_availability_rule(claims, parsed)
+    if not is_avail:
+        return PredicateEvaluation(outcome="unavailable", reason=reason)
+    return PredicateEvaluation(outcome=bool(claims.get("credential_signature_valid")), reason=None)
+
+
 @dataclass(frozen=True)
 class AgeThresholdRule:
     """Typed rule for age verification thresholds.
@@ -534,6 +558,19 @@ def create_default_predicate_registry() -> PredicateRegistry:
             parser=_create_contact_parser("email_verified"),
             availability_rule=_email_availability_rule,
             evaluator=_email_evaluator,
+        )
+    )
+
+    # 6. Credential Signature Valid (QR verification)
+    registry.register(
+        PredicateDefinition(
+            name="credential_signature_valid",
+            description="Cryptographic issuer signature verification validity flag",
+            required_claims=["credential_signature_valid"],
+            required_scopes=["openid"],
+            parser=_sig_parser,
+            availability_rule=_sig_availability_rule,
+            evaluator=_sig_evaluator,
         )
     )
 

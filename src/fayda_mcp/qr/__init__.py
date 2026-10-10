@@ -50,6 +50,7 @@ from fayda_mcp.qr.schemas import (
     QRUntrustedKeyError,
     QRVerificationError,
     QRVerificationResult,
+    QRVerificationRequest,
 )
 
 from fayda_mcp.qr.parser import (
@@ -74,6 +75,7 @@ from fayda_mcp.qr.signatures import (
     verify_detached_qr_signature,
 )
 from fayda_mcp.qr.decoder import decode_and_verify_qr
+from fayda_mcp.qr.service import FaydaQRVerificationService
 
 __all__ = [
     "SUPPORTED_QR_VERSIONS",
@@ -107,6 +109,7 @@ __all__ = [
     "QREvidence",
     "ParsedQRCode",
     "QRVerificationResult",
+    "QRVerificationRequest",
     "ScannerInput",
     "validate_scanner_text",
     "ingest_scanner_text",
@@ -123,5 +126,6 @@ __all__ = [
     "SignatureVerificationOutcome",
     "verify_detached_qr_signature",
     "decode_and_verify_qr",
+    "FaydaQRVerificationService",
 ]
 

@@ -298,3 +298,35 @@ class QRVerificationResult(BaseModel):
         default=None,
         description="Machine-readable safe error code",
     )
+
+
+class QRVerificationRequest(BaseModel):
+    """Input payload to verify a Fayda QR code credential."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    qr_text: str = Field(..., description="Raw text scanned from Fayda National ID QR code")
+    checks: List[str] = Field(
+        default_factory=lambda: ["credential_signature_valid"],
+        description="Requested checks (e.g. ['credential_signature_valid', 'age_over_18'])",
+    )
+    optional_checks: Optional[List[str]] = Field(
+        default=None,
+        description="Optional checks that do not block policy completion if unavailable",
+    )
+    purpose: Optional[str] = Field(
+        default="offline_verification",
+        description="Business purpose for verification (e.g. 'age_verification', 'entry_check')",
+    )
+    application_user_ref: Optional[str] = Field(
+        default=None,
+        description="Opaque application user reference",
+    )
+    dob_calendar: Optional[str] = Field(
+        default=None,
+        description="Calendar convention for birthdate normalization ('gregorian' or 'ethiopic')",
+    )
+    include_demographics: bool = Field(
+        default=False,
+        description="Whether to include full demographic attributes in the result (requires permission)",
+    )

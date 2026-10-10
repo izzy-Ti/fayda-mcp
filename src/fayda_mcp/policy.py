@@ -95,25 +95,21 @@ class VerificationPolicy(BaseModel):
         opt_list = [c for c in resolved_checks if c in opt_set]
         return req_list, opt_list
 
-    def validate_request(
-        self,
-        purpose: str,
-        checks: Sequence[Union[str, AgeThresholdRule]],
-    ) -> List[str]:
-        """Validate requested purpose and checks against policy before state creation or redirect.
-
-        Rejects negative, decimal, malformed, enormous, and disallowed thresholds.
-        Ensures policy acceptance and evaluation cannot diverge.
-        Returns list of resolved canonical check names.
-        """
+    def validate_purpose(self, purpose: str) -> None:
+        """Validate that the requested purpose is allowed by policy."""
         if not purpose or not purpose.strip():
             raise PolicyViolationError("Verification purpose must not be empty")
-
         if purpose not in self.allowed_purposes:
             raise PolicyViolationError(
                 f"Unsupported purpose: '{purpose}'. Permitted purposes: {self.allowed_purposes}"
             )
 
+    def validate_checks(
+        self,
+        checks: Sequence[Union[str, AgeThresholdRule]],
+        purpose: Optional[str] = None,
+    ) -> List[str]:
+        """Validate that requested checks are allowed by policy."""
         if not checks:
             raise PolicyViolationError("At least one verification check must be requested")
 
@@ -135,10 +131,20 @@ class VerificationPolicy(BaseModel):
             )
 
             if parsed_age is not None:
+                # If host policy restricted allowed_checks and no age checks are permitted
+                if not any(parse_age_check(c) is not None for c in self.allowed_checks):
+                    raise PolicyViolationError(
+                        f"Unsupported check: '{check_str}'. Permitted checks: {self.allowed_checks}"
+                    )
+
                 threshold = int(parsed_age.parameters["threshold"])
 
                 # Enforce per-purpose permitted age thresholds
-                if self.purpose_age_thresholds and purpose in self.purpose_age_thresholds:
+                if (
+                    purpose
+                    and self.purpose_age_thresholds
+                    and purpose in self.purpose_age_thresholds
+                ):
                     allowed = self.purpose_age_thresholds[purpose]
                     if isinstance(allowed, tuple) and len(allowed) == 2:
                         p_min, p_max = allowed
@@ -169,6 +175,20 @@ class VerificationPolicy(BaseModel):
             resolved_checks.append(check_str)
 
         return resolved_checks
+
+    def validate_request(
+        self,
+        purpose: str,
+        checks: Sequence[Union[str, AgeThresholdRule]],
+    ) -> List[str]:
+        """Validate requested purpose and checks against policy before state creation or redirect.
+
+        Rejects negative, decimal, malformed, enormous, and disallowed thresholds.
+        Ensures policy acceptance and evaluation cannot diverge.
+        Returns list of resolved canonical check names.
+        """
+        self.validate_purpose(purpose)
+        return self.validate_checks(checks, purpose=purpose)
 
     def resolve_scopes_and_claims(
         self, checks: Sequence[Union[str, AgeThresholdRule]]

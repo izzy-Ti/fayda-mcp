@@ -13,6 +13,12 @@ import sys
 from typing import Any, List, Optional, Tuple
 import urllib.parse
 
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
+
 
 def load_env_if_requested(env_file: Optional[str]) -> None:
     """Explicitly load environment variables from file if requested.

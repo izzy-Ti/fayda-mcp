@@ -175,6 +175,14 @@ class PostgresResultRepository:
                 retention_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 policy_version VARCHAR(32),
                 auth_url TEXT,
+                method VARCHAR(64),
+                profile VARCHAR(64),
+                key_reference VARCHAR(128),
+                evidence_ref VARCHAR(256),
+                times TEXT,
+                reasons TEXT,
+                credential_signature_valid BOOLEAN,
+                verified_at TIMESTAMP WITH TIME ZONE,
                 CONSTRAINT uq_{self.table_prefix}req_idemp UNIQUE (tenant_id, principal_id, idempotency_key)
             );
             """,
@@ -188,7 +196,10 @@ class PostgresResultRepository:
                 verified_at TIMESTAMP WITH TIME ZONE,
                 result_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
                 evidence_ref VARCHAR(256),
-                policy_version VARCHAR(32)
+                policy_version VARCHAR(32),
+                method VARCHAR(64),
+                profile VARCHAR(64),
+                key_reference VARCHAR(128)
             );
             """,
             f"""
@@ -199,7 +210,11 @@ class PostgresResultRepository:
                 principal_id VARCHAR(128),
                 event_type VARCHAR(64) NOT NULL,
                 occurred_at TIMESTAMP WITH TIME ZONE NOT NULL,
-                safe_metadata TEXT NOT NULL
+                safe_metadata TEXT NOT NULL,
+                method VARCHAR(64),
+                profile VARCHAR(64),
+                key_reference VARCHAR(128),
+                policy_version VARCHAR(32)
             );
             """,
         ]
@@ -208,6 +223,32 @@ class PostgresResultRepository:
             async with session.begin():
                 for stmt in ddl_statements:
                     await session.execute(_sql_text(stmt))
+
+        # Schema evolution for existing tables (safe column additions)
+        migration_statements = [
+            f"ALTER TABLE {self.requests_table} ADD COLUMN method VARCHAR(64)",
+            f"ALTER TABLE {self.requests_table} ADD COLUMN profile VARCHAR(64)",
+            f"ALTER TABLE {self.requests_table} ADD COLUMN key_reference VARCHAR(128)",
+            f"ALTER TABLE {self.requests_table} ADD COLUMN evidence_ref VARCHAR(256)",
+            f"ALTER TABLE {self.requests_table} ADD COLUMN times TEXT",
+            f"ALTER TABLE {self.requests_table} ADD COLUMN reasons TEXT",
+            f"ALTER TABLE {self.requests_table} ADD COLUMN credential_signature_valid BOOLEAN",
+            f"ALTER TABLE {self.requests_table} ADD COLUMN verified_at TIMESTAMP WITH TIME ZONE",
+            f"ALTER TABLE {self.results_table} ADD COLUMN method VARCHAR(64)",
+            f"ALTER TABLE {self.results_table} ADD COLUMN profile VARCHAR(64)",
+            f"ALTER TABLE {self.results_table} ADD COLUMN key_reference VARCHAR(128)",
+            f"ALTER TABLE {self.audit_table} ADD COLUMN method VARCHAR(64)",
+            f"ALTER TABLE {self.audit_table} ADD COLUMN profile VARCHAR(64)",
+            f"ALTER TABLE {self.audit_table} ADD COLUMN key_reference VARCHAR(128)",
+            f"ALTER TABLE {self.audit_table} ADD COLUMN policy_version VARCHAR(32)",
+        ]
+        for m_stmt in migration_statements:
+            try:
+                async with self.session_factory() as session:
+                    async with session.begin():
+                        await session.execute(_sql_text(m_stmt))
+            except Exception:
+                pass
 
     async def save_request(self, request_id: str, data: Dict[str, Any], ttl_seconds: int = 900) -> None:
         """Persist or update verification request record using parameterized SQL."""
@@ -226,24 +267,47 @@ class PostgresResultRepository:
         auth_url = req_copy.get("authorization_url")
         checks_json = json.dumps(req_copy.get("checks", []))
 
+        method = req_copy.get("method")
+        profile = req_copy.get("profile") or (f"v{req_copy.get('qr_version')}" if req_copy.get("qr_version") else None)
+        key_ref = req_copy.get("key_reference") or req_copy.get("key_thumbprint") or req_copy.get("key_id")
+        evidence_ref = req_copy.get("evidence_ref")
+        times_val = req_copy.get("times")
+        times_json = json.dumps(times_val) if times_val is not None else None
+        reasons_val = req_copy.get("reasons")
+        reasons_json = json.dumps(reasons_val) if reasons_val is not None else None
+        cred_sig = req_copy.get("credential_signature_valid")
+        verified_at = _to_dt(req_copy.get("verified_at"))
+
         sql = f"""
         INSERT INTO {self.requests_table} (
             request_id, tenant_id, principal_id, application_user_ref,
             idempotency_key, request_fingerprint, purpose, checks,
             status, created_at, session_expires_at, retention_expires_at,
-            policy_version, auth_url
+            policy_version, auth_url,
+            method, profile, key_reference, evidence_ref,
+            times, reasons, credential_signature_valid, verified_at
         ) VALUES (
             :request_id, :tenant_id, :principal_id, :application_user_ref,
             :idempotency_key, :request_fingerprint, :purpose, :checks,
             :status, :created_at, :session_expires_at, :retention_expires_at,
-            :policy_version, :auth_url
+            :policy_version, :auth_url,
+            :method, :profile, :key_reference, :evidence_ref,
+            :times, :reasons, :credential_signature_valid, :verified_at
         )
         ON CONFLICT (request_id) DO UPDATE SET
             status = :status,
             checks = :checks,
             session_expires_at = :session_expires_at,
             retention_expires_at = :retention_expires_at,
-            auth_url = :auth_url
+            auth_url = :auth_url,
+            method = :method,
+            profile = :profile,
+            key_reference = :key_reference,
+            evidence_ref = :evidence_ref,
+            times = :times,
+            reasons = :reasons,
+            credential_signature_valid = :credential_signature_valid,
+            verified_at = :verified_at
         """
 
         params = {
@@ -261,6 +325,14 @@ class PostgresResultRepository:
             "retention_expires_at": _to_dt(retention_expires_at),
             "policy_version": policy_version,
             "auth_url": auth_url,
+            "method": method,
+            "profile": profile,
+            "key_reference": key_ref,
+            "evidence_ref": evidence_ref,
+            "times": times_json,
+            "reasons": reasons_json,
+            "credential_signature_valid": cred_sig,
+            "verified_at": verified_at,
         }
 
         async with self.session_factory() as session:
@@ -291,17 +363,32 @@ class PostgresResultRepository:
         checks_json = json.dumps(req_copy.get("checks", []))
         fingerprint = req_copy.get("request_fingerprint")
 
+        method = req_copy.get("method")
+        profile = req_copy.get("profile") or (f"v{req_copy.get('qr_version')}" if req_copy.get("qr_version") else None)
+        key_ref = req_copy.get("key_reference") or req_copy.get("key_thumbprint") or req_copy.get("key_id")
+        evidence_ref = req_copy.get("evidence_ref")
+        times_val = req_copy.get("times")
+        times_json = json.dumps(times_val) if times_val is not None else None
+        reasons_val = req_copy.get("reasons")
+        reasons_json = json.dumps(reasons_val) if reasons_val is not None else None
+        cred_sig = req_copy.get("credential_signature_valid")
+        verified_at = _to_dt(req_copy.get("verified_at"))
+
         sql_reserve = f"""
         INSERT INTO {self.requests_table} (
             request_id, tenant_id, principal_id, application_user_ref,
             idempotency_key, request_fingerprint, purpose, checks,
             status, created_at, session_expires_at, retention_expires_at,
-            policy_version, auth_url
+            policy_version, auth_url,
+            method, profile, key_reference, evidence_ref,
+            times, reasons, credential_signature_valid, verified_at
         ) VALUES (
             :request_id, :tenant_id, :principal_id, :application_user_ref,
             :idempotency_key, :request_fingerprint, :purpose, :checks,
             :status, :created_at, :session_expires_at, :retention_expires_at,
-            :policy_version, :auth_url
+            :policy_version, :auth_url,
+            :method, :profile, :key_reference, :evidence_ref,
+            :times, :reasons, :credential_signature_valid, :verified_at
         )
         ON CONFLICT (tenant_id, principal_id, idempotency_key) DO NOTHING
         """
@@ -321,6 +408,14 @@ class PostgresResultRepository:
             "retention_expires_at": _to_dt(retention_expires_at),
             "policy_version": policy_version,
             "auth_url": auth_url,
+            "method": method,
+            "profile": profile,
+            "key_reference": key_ref,
+            "evidence_ref": evidence_ref,
+            "times": times_json,
+            "reasons": reasons_json,
+            "credential_signature_valid": cred_sig,
+            "verified_at": verified_at,
         }
 
         async with self._lock:
@@ -350,7 +445,9 @@ class PostgresResultRepository:
         SELECT request_id, tenant_id, principal_id, application_user_ref,
                idempotency_key, request_fingerprint, purpose, checks,
                status, created_at, session_expires_at, retention_expires_at,
-               policy_version, auth_url
+               policy_version, auth_url,
+               method, profile, key_reference, evidence_ref,
+               times, reasons, credential_signature_valid, verified_at
         FROM {self.requests_table}
         WHERE request_id = :request_id
         """
@@ -377,6 +474,18 @@ class PostgresResultRepository:
             else:
                 checks = []
 
+            times_raw = row.get("times")
+            times = json.loads(times_raw) if isinstance(times_raw, str) else (times_raw or {})
+            reasons_raw = row.get("reasons")
+            reasons = json.loads(reasons_raw) if isinstance(reasons_raw, str) else (reasons_raw or {})
+            key_ref = row.get("key_reference")
+            profile_val = row.get("profile")
+            method_val = row.get("method")
+            evidence_ref_val = row.get("evidence_ref")
+            cred_raw = row.get("credential_signature_valid")
+            cred_sig_val = bool(cred_raw) if cred_raw is not None else None
+            ver_at_val = _to_iso(row.get("verified_at"))
+
             return {
                 "request_id": row["request_id"],
                 "tenant_id": row["tenant_id"],
@@ -392,6 +501,15 @@ class PostgresResultRepository:
                 "retention_expires_at": retention_exp,
                 "policy_version": row["policy_version"],
                 "authorization_url": row["auth_url"],
+                "method": method_val,
+                "profile": profile_val,
+                "key_reference": key_ref,
+                "key_thumbprint": key_ref,
+                "evidence_ref": evidence_ref_val,
+                "times": times,
+                "reasons": reasons,
+                "credential_signature_valid": cred_sig_val,
+                "verified_at": ver_at_val,
             }
 
     async def find_by_idempotency_key(
@@ -402,7 +520,9 @@ class PostgresResultRepository:
         SELECT request_id, tenant_id, principal_id, application_user_ref,
                idempotency_key, request_fingerprint, purpose, checks,
                status, created_at, session_expires_at, retention_expires_at,
-               policy_version, auth_url
+               policy_version, auth_url,
+               method, profile, key_reference, evidence_ref,
+               times, reasons, credential_signature_valid, verified_at
         FROM {self.requests_table}
         WHERE tenant_id = :tenant_id
           AND principal_id = :principal_id
@@ -437,6 +557,18 @@ class PostgresResultRepository:
             else:
                 checks = []
 
+            times_raw = row.get("times")
+            times = json.loads(times_raw) if isinstance(times_raw, str) else (times_raw or {})
+            reasons_raw = row.get("reasons")
+            reasons = json.loads(reasons_raw) if isinstance(reasons_raw, str) else (reasons_raw or {})
+            key_ref = row.get("key_reference")
+            profile_val = row.get("profile")
+            method_val = row.get("method")
+            evidence_ref_val = row.get("evidence_ref")
+            cred_raw = row.get("credential_signature_valid")
+            cred_sig_val = bool(cred_raw) if cred_raw is not None else None
+            ver_at_val = _to_iso(row.get("verified_at"))
+
             return {
                 "request_id": row["request_id"],
                 "tenant_id": row["tenant_id"],
@@ -452,6 +584,15 @@ class PostgresResultRepository:
                 "retention_expires_at": retention_exp,
                 "policy_version": row["policy_version"],
                 "authorization_url": row["auth_url"],
+                "method": method_val,
+                "profile": profile_val,
+                "key_reference": key_ref,
+                "key_thumbprint": key_ref,
+                "evidence_ref": evidence_ref_val,
+                "times": times,
+                "reasons": reasons,
+                "credential_signature_valid": cred_sig_val,
+                "verified_at": ver_at_val,
             }
 
     async def update_status(self, request_id: str, status: str) -> None:
@@ -500,11 +641,13 @@ class PostgresResultRepository:
         sql_insert_result = f"""
         INSERT INTO {self.results_table} (
             request_id, tenant_id, principal_id, status, checks,
-            verified_at, result_expires_at, evidence_ref, policy_version
+            verified_at, result_expires_at, evidence_ref, policy_version,
+            method, profile, key_reference
         )
         SELECT
             r.request_id, r.tenant_id, r.principal_id, :status, :checks,
-            :verified_at, :result_expires_at, :evidence_ref, :policy_version
+            :verified_at, :result_expires_at, :evidence_ref, :policy_version,
+            :method, :profile, :key_reference
         FROM {self.requests_table} r
         WHERE r.request_id = :request_id
         ON CONFLICT (request_id) DO UPDATE SET
@@ -513,7 +656,10 @@ class PostgresResultRepository:
             verified_at = :verified_at,
             result_expires_at = :result_expires_at,
             evidence_ref = :evidence_ref,
-            policy_version = :policy_version
+            policy_version = :policy_version,
+            method = :method,
+            profile = :profile,
+            key_reference = :key_reference
         """
 
         async with self._lock:
@@ -533,6 +679,9 @@ class PostgresResultRepository:
                         "result_expires_at": _to_dt(result_expires_at),
                         "evidence_ref": result.evidence_ref,
                         "policy_version": result.policy_version or "v1",
+                        "method": getattr(result, "method", None),
+                        "profile": getattr(result, "profile", None),
+                        "key_reference": getattr(result, "key_reference", None),
                     }
                     await session.execute(_sql_text(sql_insert_result), params_insert)
 
@@ -540,15 +689,23 @@ class PostgresResultRepository:
                     if audit_event:
                         event_id = str(uuid.uuid4())
                         event_type = audit_event.get("event_type", "verification_completed")
-                        safe_meta = json.dumps(audit_event.get("metadata", {}))
+                        audit_meta = audit_event.get("metadata", {})
+                        safe_meta = json.dumps(audit_meta)
+                        method_val = audit_meta.get("method") or getattr(result, "method", None)
+                        profile_val = audit_meta.get("profile") or getattr(result, "profile", None)
+                        key_ref_val = audit_meta.get("key_reference") or audit_meta.get("key_thumbprint") or getattr(result, "key_reference", None)
+                        policy_ver_val = audit_meta.get("policy_version") or result.policy_version or "v1"
+
                         sql_insert_audit = f"""
                         INSERT INTO {self.audit_table} (
                             event_id, request_id, tenant_id, principal_id,
-                            event_type, occurred_at, safe_metadata
+                            event_type, occurred_at, safe_metadata,
+                            method, profile, key_reference, policy_version
                         )
                         SELECT
                             :event_id, r.request_id, r.tenant_id, r.principal_id,
-                            :event_type, :occurred_at, :safe_metadata
+                            :event_type, :occurred_at, :safe_metadata,
+                            :method, :profile, :key_reference, :policy_version
                         FROM {self.requests_table} r
                         WHERE r.request_id = :request_id
                         """
@@ -560,6 +717,10 @@ class PostgresResultRepository:
                                 "event_type": event_type,
                                 "occurred_at": _to_dt(now),
                                 "safe_metadata": safe_meta,
+                                "method": method_val,
+                                "profile": profile_val,
+                                "key_reference": key_ref_val,
+                                "policy_version": policy_ver_val,
                             },
                         )
 
@@ -580,11 +741,13 @@ class PostgresResultRepository:
         sql_upsert_res = f"""
         INSERT INTO {self.results_table} (
             request_id, tenant_id, principal_id, status, checks,
-            verified_at, result_expires_at, evidence_ref, policy_version
+            verified_at, result_expires_at, evidence_ref, policy_version,
+            method, profile, key_reference
         )
         SELECT
             r.request_id, r.tenant_id, r.principal_id, :status, :checks,
-            :verified_at, :result_expires_at, :evidence_ref, :policy_version
+            :verified_at, :result_expires_at, :evidence_ref, :policy_version,
+            :method, :profile, :key_reference
         FROM {self.requests_table} r
         WHERE r.request_id = :request_id
         ON CONFLICT (request_id) DO UPDATE SET
@@ -593,7 +756,10 @@ class PostgresResultRepository:
             verified_at = :verified_at,
             result_expires_at = :result_expires_at,
             evidence_ref = :evidence_ref,
-            policy_version = :policy_version
+            policy_version = :policy_version,
+            method = :method,
+            profile = :profile,
+            key_reference = :key_reference
         """
 
         async with self.session_factory() as session:
@@ -609,13 +775,17 @@ class PostgresResultRepository:
                     "result_expires_at": _to_dt(result_expires_at),
                     "evidence_ref": result.evidence_ref,
                     "policy_version": result.policy_version or "v1",
+                    "method": getattr(result, "method", None),
+                    "profile": getattr(result, "profile", None),
+                    "key_reference": getattr(result, "key_reference", None),
                 }
                 await session.execute(_sql_text(sql_upsert_res), params)
 
     async def get_result(self, request_id: str) -> Optional[VerificationResult]:
         """Retrieve final evaluated verification result."""
         sql = f"""
-        SELECT request_id, status, checks, verified_at, result_expires_at, evidence_ref, policy_version
+        SELECT request_id, status, checks, verified_at, result_expires_at, evidence_ref, policy_version,
+               method, profile, key_reference
         FROM {self.results_table}
         WHERE request_id = :request_id
         """
@@ -641,6 +811,23 @@ class PostgresResultRepository:
                     checks = {}
             else:
                 checks = {}
+
+            method_val = row.get("method")
+            if method_val:
+                from fayda_mcp.qr.schemas import QRVerificationResult
+                return QRVerificationResult(
+                    request_id=row["request_id"],
+                    status=row["status"],
+                    method=method_val,
+                    profile=row.get("profile") or "v4",
+                    key_reference=row.get("key_reference"),
+                    policy_version=row.get("policy_version"),
+                    checks=checks,
+                    verified_at=_to_iso(row.get("verified_at")),
+                    evidence_ref=row.get("evidence_ref"),
+                    credential_signature_valid=True if row["status"] in ("verified", "incomplete", "rejected") else False,
+                    holder_authenticated=False,
+                )
 
             return VerificationResult(
                 request_id=row["request_id"],
@@ -687,13 +874,19 @@ class PostgresAuditLogger:
         request_id = safe_metadata.get("request_id")
         tenant_id = safe_metadata.get("tenant_id") or "default"
         principal_id = safe_metadata.get("principal_id") or "default"
+        method_val = safe_metadata.get("method")
+        profile_val = safe_metadata.get("profile")
+        key_ref_val = safe_metadata.get("key_reference") or safe_metadata.get("key_thumbprint")
+        policy_ver_val = safe_metadata.get("policy_version")
         metadata_json = json.dumps(safe_metadata)
 
         sql = f"""
         INSERT INTO {self.audit_table} (
-            event_id, request_id, tenant_id, principal_id, event_type, occurred_at, safe_metadata
+            event_id, request_id, tenant_id, principal_id, event_type, occurred_at, safe_metadata,
+            method, profile, key_reference, policy_version
         ) VALUES (
-            :event_id, :request_id, :tenant_id, :principal_id, :event_type, :occurred_at, :safe_metadata
+            :event_id, :request_id, :tenant_id, :principal_id, :event_type, :occurred_at, :safe_metadata,
+            :method, :profile, :key_reference, :policy_version
         )
         """
 
@@ -705,6 +898,10 @@ class PostgresAuditLogger:
             "event_type": event_type,
             "occurred_at": _to_dt(now),
             "safe_metadata": metadata_json,
+            "method": method_val,
+            "profile": profile_val,
+            "key_reference": key_ref_val,
+            "policy_version": policy_ver_val,
         }
 
         async with self.session_factory() as session:
@@ -715,7 +912,8 @@ class PostgresAuditLogger:
         """Retrieve recorded audit events, optionally filtered by request_id."""
         if request_id is not None:
             sql = f"""
-            SELECT event_id, request_id, tenant_id, principal_id, event_type, occurred_at, safe_metadata
+            SELECT event_id, request_id, tenant_id, principal_id, event_type, occurred_at, safe_metadata,
+                   method, profile, key_reference, policy_version
             FROM {self.audit_table}
             WHERE request_id = :request_id
             ORDER BY occurred_at ASC
@@ -723,7 +921,8 @@ class PostgresAuditLogger:
             params: Dict[str, Any] = {"request_id": request_id}
         else:
             sql = f"""
-            SELECT event_id, request_id, tenant_id, principal_id, event_type, occurred_at, safe_metadata
+            SELECT event_id, request_id, tenant_id, principal_id, event_type, occurred_at, safe_metadata,
+                   method, profile, key_reference, policy_version
             FROM {self.audit_table}
             ORDER BY occurred_at ASC
             """
@@ -753,6 +952,10 @@ class PostgresAuditLogger:
                         "event_type": row["event_type"],
                         "metadata": metadata,
                         "timestamp": _from_dt(row["occurred_at"]),
+                        "method": row.get("method"),
+                        "profile": row.get("profile"),
+                        "key_reference": row.get("key_reference"),
+                        "policy_version": row.get("policy_version"),
                     }
                 )
             return events

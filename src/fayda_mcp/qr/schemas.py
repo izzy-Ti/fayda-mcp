@@ -282,6 +282,10 @@ class QRVerificationResult(BaseModel):
         default=None,
         description="Structured audit evidence record",
     )
+    evidence_ref: Optional[str] = Field(
+        default=None,
+        description="Deterministic opaque digest or reference to the evidence record",
+    )
     demographics: Optional[QRDemographics] = Field(
         default=None,
         description="Demographics payload, present only when policy permits full claim extraction",
@@ -317,6 +321,14 @@ class QRVerificationResult(BaseModel):
     policy_version: Optional[str] = Field(
         default=None,
         description="Evaluated policy version",
+    )
+    profile: Optional[str] = Field(
+        default="v4",
+        description="QR specification profile version (e.g. 'v4')",
+    )
+    key_reference: Optional[str] = Field(
+        default=None,
+        description="Cryptographic trusted public key thumbprint or reference",
     )
     error: Optional[str] = Field(
         default=None,
@@ -355,6 +367,14 @@ class QRAgentVerificationResult(BaseModel):
     method: Literal["qr_offline"] = Field(
         default="qr_offline",
         description="Verification method identifier",
+    )
+    profile: Optional[str] = Field(
+        default="v4",
+        description="QR specification profile version (e.g. 'v4')",
+    )
+    key_reference: Optional[str] = Field(
+        default=None,
+        description="Cryptographic trusted public key thumbprint or reference",
     )
     checks: Dict[str, CheckOutcomeType] = Field(
         default_factory=dict,
@@ -435,11 +455,15 @@ def filter_agent_output(
             times_dict["expires_at"] = exp_at
 
         evidence_ref = result.evidence.evidence_ref if result.evidence else None
+        key_ref = result.key_reference or (result.evidence.key_thumbprint if result.evidence else None)
+        profile = result.profile or (f"v{result.evidence.qr_version}" if result.evidence and result.evidence.qr_version else "v4")
 
         return QRAgentVerificationResult(
             request_id=result.request_id or "",
             status=result.status,
             method="qr_offline",
+            profile=profile,
+            key_reference=key_ref,
             checks=dict(result.checks),
             reasons=dict(result.reasons),
             times=times_dict,
@@ -467,10 +491,15 @@ def filter_agent_output(
     if result.get("created_at") and "created_at" not in times_dict:
         times_dict["created_at"] = result.get("created_at")
 
+    profile = result.get("profile") or (f"v{result.get('qr_version')}" if result.get("qr_version") else "v4")
+    key_ref = result.get("key_reference") or result.get("key_thumbprint")
+
     return QRAgentVerificationResult(
         request_id=str(result.get("request_id", "")),
         status=result.get("status", "unverified"),
         method="qr_offline",
+        profile=profile,
+        key_reference=key_ref,
         checks=dict(result.get("checks", {})),
         reasons=dict(result.get("reasons", {})),
         times=times_dict,

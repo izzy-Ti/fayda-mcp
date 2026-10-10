@@ -24,6 +24,14 @@ CREATE TABLE IF NOT EXISTS fayda_requests (
     retention_expires_at TIMESTAMPTZ NOT NULL,
     policy_version VARCHAR(32) DEFAULT 'v1',
     auth_url TEXT,
+    method VARCHAR(64),
+    profile VARCHAR(64),
+    key_reference VARCHAR(128),
+    evidence_ref VARCHAR(256),
+    times TEXT,
+    reasons TEXT,
+    credential_signature_valid BOOLEAN,
+    verified_at TIMESTAMPTZ,
     CONSTRAINT uq_fayda_requests_idemp UNIQUE (tenant_id, principal_id, idempotency_key),
     CONSTRAINT uq_fayda_requests_tenant_req UNIQUE (tenant_id, principal_id, request_id)
 );
@@ -39,6 +47,9 @@ CREATE TABLE IF NOT EXISTS fayda_results (
     result_expires_at TIMESTAMPTZ NOT NULL,
     evidence_ref VARCHAR(256),
     policy_version VARCHAR(32) DEFAULT 'v1',
+    method VARCHAR(64),
+    profile VARCHAR(64),
+    key_reference VARCHAR(128),
     CONSTRAINT fk_fayda_results_requests FOREIGN KEY (tenant_id, principal_id, request_id)
         REFERENCES fayda_requests (tenant_id, principal_id, request_id)
         ON DELETE CASCADE
@@ -53,7 +64,11 @@ CREATE TABLE IF NOT EXISTS fayda_audit_events (
     principal_id VARCHAR(128) NOT NULL,
     event_type VARCHAR(64) NOT NULL,
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    safe_metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    safe_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    method VARCHAR(64),
+    profile VARCHAR(64),
+    key_reference VARCHAR(128),
+    policy_version VARCHAR(32)
 );
 
 -- 5. Performance, Caller Isolation, and Expiry Indexes

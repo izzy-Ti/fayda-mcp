@@ -228,6 +228,8 @@ class FaydaQRVerificationService:
         now_iso = datetime.now(timezone.utc).isoformat()
         verified_ts = evidence.verified_at if evidence and evidence.verified_at else now_iso
         times = {"verified_at": verified_ts}
+        key_ref = evidence.key_thumbprint if evidence else None
+        profile = f"v{evidence.qr_version}" if evidence and evidence.qr_version else "v4"
         final_result = QRVerificationResult(
             request_id=f"qr_{uuid4().hex[:16]}",
             application_user_ref=request.application_user_ref,
@@ -235,11 +237,14 @@ class FaydaQRVerificationService:
             verified_at=verified_ts,
             times=times,
             method="qr_offline",
+            profile=profile,
+            key_reference=key_ref,
             policy_version=self.policy.version if self.policy else "v1",
             status=status,
             credential_signature_valid=raw_result.credential_signature_valid,
             holder_authenticated=False,
             evidence=evidence,
+            evidence_ref=evidence.evidence_ref if evidence else None,
             demographics=demographics,
             checks=evaluated_checks,
             reasons=reasons,
@@ -253,15 +258,23 @@ class FaydaQRVerificationService:
         """Reconstruct a QRVerificationResult from a persisted repository record."""
         evidence_ref = record.get("evidence_ref")
         evidence = None
+        key_ref = record.get("key_reference") or record.get("key_thumbprint")
+        qr_version = record.get("qr_version", 4)
+        if isinstance(record.get("profile"), str) and record["profile"].startswith("v"):
+            try:
+                qr_version = int(record["profile"][1:])
+            except Exception:
+                pass
+
         if evidence_ref:
             evidence = QREvidence(
                 evidence_type="qr_offline",
                 credential_signature_valid=bool(record.get("credential_signature_valid", True)),
                 holder_authenticated=False,
                 identity_verified=False,
-                qr_version=record.get("qr_version", 4),
+                qr_version=qr_version,
                 verified_at=record.get("verified_at"),
-                key_thumbprint=record.get("key_thumbprint"),
+                key_thumbprint=key_ref,
                 evidence_ref=evidence_ref,
                 checks_evaluated=record.get("checks", {}),
                 reasons=record.get("reasons", {}),
@@ -276,13 +289,17 @@ class FaydaQRVerificationService:
         if record.get("expires_at") and "expires_at" not in times:
             times["expires_at"] = record.get("expires_at")
 
+        profile = record.get("profile") or f"v{qr_version}"
+
         return QRVerificationResult(
             request_id=record.get("request_id"),
             application_user_ref=record.get("application_user_ref"),
             purpose=record.get("purpose"),
             verified_at=verified_at,
             times=times,
-            method="qr_offline",
+            method=record.get("method", "qr_offline"),
+            profile=profile,
+            key_reference=key_ref,
             policy_version=record.get("policy_version"),
             status=record.get("status", "verified"),
             credential_signature_valid=bool(record.get("credential_signature_valid", True)),
@@ -382,6 +399,9 @@ class FaydaQRVerificationService:
         # 4. Persist minimal evidence in ResultRepository (Neon / Memory)
         if self.results:
             ttl_seconds = self.config.result_ttl_seconds if self.config else 900
+            key_ref = result.evidence.key_thumbprint if result.evidence else None
+            profile = result.profile or (f"v{result.evidence.qr_version}" if result.evidence and result.evidence.qr_version else "v4")
+            policy_version = result.policy_version or (self.policy.version if self.policy else "v1")
             record_data = {
                 "request_id": req_id,
                 "tenant_id": ctx.tenant_id,
@@ -397,10 +417,12 @@ class FaydaQRVerificationService:
                 "reasons": result.reasons,
                 "times": result.times,
                 "evidence_ref": result.evidence.evidence_ref if result.evidence else None,
-                "key_thumbprint": result.evidence.key_thumbprint if result.evidence else None,
+                "key_thumbprint": key_ref,
+                "key_reference": key_ref,
                 "qr_version": result.evidence.qr_version if result.evidence else 4,
+                "profile": profile,
                 "verified_at": result.verified_at,
-                "policy_version": result.policy_version,
+                "policy_version": policy_version,
                 "method": "qr_offline",
                 "created_at": now_iso,
             }
@@ -413,6 +435,9 @@ class FaydaQRVerificationService:
         # 5. Persist audit log event
         if self.audit:
             evidence_ref = result.evidence.evidence_ref if result.evidence else None
+            key_ref = result.evidence.key_thumbprint if result.evidence else None
+            profile = result.profile or (f"v{result.evidence.qr_version}" if result.evidence and result.evidence.qr_version else "v4")
+            policy_version = result.policy_version or (self.policy.version if self.policy else "v1")
             await self.audit.record_event(
                 event_type="qr_verification",
                 safe_metadata={
@@ -425,7 +450,12 @@ class FaydaQRVerificationService:
                     "credential_signature_valid": result.credential_signature_valid,
                     "evidence_ref": evidence_ref,
                     "checks": result.checks,
+                    "reasons": result.reasons,
+                    "times": result.times,
                     "method": "qr_offline",
+                    "profile": profile,
+                    "key_reference": key_ref,
+                    "policy_version": policy_version,
                 },
             )
 

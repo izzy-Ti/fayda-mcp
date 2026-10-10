@@ -21,6 +21,26 @@ Fayda Developer / eSignet portals and OAuth dashboards often use portal-specific
 
 ---
 
+## Offline QR Verification Configuration
+
+Physical QR credential verification operates offline without OIDC redirects, webhooks, or client private signing keys. It is controlled by the following parameters:
+
+| Configuration Parameter | Environment Variable | Default | Description |
+|---|---|---|---|
+| `qr_verification_enabled` | `FAYDA_QR_VERIFICATION_ENABLED`, `QR_VERIFICATION_ENABLED`, `QR_ENABLED` | `False` | Master switch. Defaults to `False` for fail-closed security. Must be explicitly enabled. |
+| `qr_profile` | `FAYDA_QR_PROFILE`, `QR_PROFILE` | `"v4"` | Target specification profile version. |
+| `qr_allowed_profiles` | `FAYDA_QR_ALLOWED_PROFILES`, `QR_ALLOWED_PROFILES` | `["v4"]` | Comma-delimited list of accepted QR specification versions. |
+| `qr_key_bundle_path` | `FAYDA_QR_KEY_BUNDLE_PATH`, `QR_KEY_BUNDLE_PATH` | `None` | Path to PEM/JSON bundle containing trusted National ID authority public keys. |
+| `qr_public_key_pem` | `FAYDA_QR_PUBLIC_KEY_PEM`, `QR_PUBLIC_KEY_PEM` | `None` | Inline PEM string of the trusted National ID authority public key. |
+| `qr_max_text_size_bytes` | `FAYDA_QR_MAX_TEXT_SIZE_BYTES`, `QR_MAX_TEXT_SIZE_BYTES` | `16384` | Maximum allowable scanner text size in bytes to prevent DoS/memory exhaustion. |
+| `qr_dob_calendar` | `FAYDA_QR_DOB_CALENDAR`, `QR_DOB_CALENDAR` | `"gregorian"` | Default calendar convention for date of birth (`"gregorian"` or `"ethiopic"`). |
+| `qr_confirmed_calendars` | `FAYDA_QR_CONFIRMED_CALENDARS`, `QR_CONFIRMED_CALENDARS` | `["gregorian", "ethiopic"]` | Comma-delimited list of recognized calendars permitted for age evaluations. |
+
+> [!IMPORTANT]
+> **Fail-Closed Security**: QR verification is disabled by default (`qr_verification_enabled = False`). Invoking verification tools when disabled raises `QRVerificationDisabledError` to prevent inadvertent acceptance of unconfigured verifiers.
+
+---
+
 
 ## Loading Configuration
 
@@ -45,6 +65,8 @@ config = FaydaConfig.sandbox(
     client_id="your_sandbox_client_id",
     redirect_uri="http://localhost:8000/auth/fayda/callback",
     signing_key_path="secrets/fayda_private_key.pem",
+    qr_verification_enabled=True,
+    qr_key_bundle_path="secrets/fayda_qr_authority.pem",
 )
 ```
 
@@ -64,5 +86,8 @@ config = FaydaConfig(
     signing_key_path="/run/secrets/fayda_key.pem",
     session_ttl_seconds=300,
     result_ttl_seconds=600,
+    qr_verification_enabled=True,
+    qr_key_bundle_path="/run/secrets/fayda_qr_bundle.pem",
+    qr_max_text_size_bytes=16384,
 )
 ```

@@ -7,10 +7,15 @@ An importable, headless Python library providing Model Context Protocol (MCP) to
 
 ## Key Capabilities
 
-- **Explicit FastMCP Tools**: `start_verification`, `get_verification_status`, `get_verification_result`, `cancel_verification`.
-- **Zero Raw Demographic / Biometric Leaks**: Outputs minimal boolean predicates (`identity_verified`, `age_over_18`), strictly forbidding citizen biometrics, OTPs, or demographic dumps from entering LLM contexts.
-- **Cryptographic Security**: OIDC PKCE S256, RFC 7523 `private_key_jwt` client assertions, and strict JWT signature/nonce validation.
-- **Pluggable Architecture**: Zero mandatory database or web framework runtime dependencies in core; optional extras for FastAPI, Redis, and Neon/PostgreSQL.
+- **Explicit FastMCP Tools**:
+  - eSignet OIDC: `start_verification`, `get_verification_status`, `get_verification_result`, `cancel_verification`.
+  - Offline QR Code: `submit_qr_verification`, `get_qr_verification_result`.
+- **Zero Raw Demographic / Biometric Leaks**: Outputs minimal boolean predicates (`identity_verified`, `age_over_18`, `credential_signature_valid`), strictly forbidding citizen biometrics, OTPs, or demographic dumps from entering LLM contexts.
+- **Offline & Edge Verification**: High-density QR verification runs completely offline—requiring **no OIDC callback, no webhook, and no client private signing key** (only authority public key / trust bundle).
+- **Physical Credential Security Boundaries**: Physical QR scanning validates issuer provenance and credential integrity, but strictly sets `holder_authenticated=false` and never asserts `identity_verified` without live authentication. Copied/screenshotted QR threat model is enforced fail-closed.
+- **Scanner Text First Delivery**: Core library accepts raw ASCII scanner text directly from handheld barcode readers and camera SDKs (image scanning is a separate optional adapter).
+- **Cryptographic Security**: OIDC PKCE S256, RFC 7523 `private_key_jwt` client assertions, and RFC 7515 Appendix F RS256 detached JWS signature verification.
+- **Pluggable Architecture**: Zero mandatory database or web framework runtime dependencies in core; optional extras for FastAPI, Redis, and Neon/PostgreSQL. Redis remains optional for temporary references and rate limits.
 - **Multi-Tenant Caller Isolation**: Built-in tenant and principal boundaries ensuring Caller A cannot access Caller B verification records.
 
 ---
@@ -18,7 +23,7 @@ An importable, headless Python library providing Model Context Protocol (MCP) to
 ## Installation
 
 ```bash
-# Core library (headless FastMCP + Fayda OIDC verification engine)
+# Core library (headless FastMCP + Fayda OIDC + Offline QR verification engine)
 pip install fayda-mcp
 
 # With optional FastAPI integration
@@ -30,7 +35,41 @@ pip install "fayda-mcp[fastapi,redis,postgres]"
 
 ---
 
-## Quick Start (Sandbox)
+## Quick Start (Offline QR Verification)
+
+```python
+from fayda_mcp import FaydaConfig, FaydaVerificationService
+from fayda_mcp.storage.memory import MemoryResultRepository, MemorySessionStore
+
+# 1. Enable QR verification with Fayda authority public key
+config = FaydaConfig.sandbox(
+    client_id="kiosk_qr_verifier",
+    redirect_uri="https://localhost/unused",
+    qr_verification_enabled=True,
+    qr_key_bundle_path="path/to/fayda_qr_keys.pem",  # or qr_public_key_pem
+)
+
+# 2. Initialize service (memory or database storage)
+service = FaydaVerificationService(
+    config=config,
+    sessions=MemorySessionStore(),
+    results=MemoryResultRepository(),
+)
+
+# 3. Submit scanned QR text (no network or callbacks needed)
+result = await service.submit_qr_verification(
+    qr_text="<raw_scanner_text_from_physical_card>",
+    purpose="kyc",
+    checks=["credential_signature_valid", "age_over_18"],
+)
+# Returns minimal filtered agent predicates; demographics and photo are excluded!
+print(result.checks)  # {'credential_signature_valid': True, 'age_over_18': True}
+print(result.holder_authenticated)  # False (offline scan alone does not prove live presence)
+```
+
+---
+
+## Quick Start (OIDC Sandbox)
 
 ```python
 from fayda_mcp import FaydaConfig, FaydaVerificationService
@@ -73,6 +112,7 @@ This runs the entire end-to-end lifecycle (starts verification -> builds authori
 
 ## Examples
 
+- **Offline QR Verification**: [examples/qr_verification.py](examples/qr_verification.py) (Standalone scanner text verification, minimal agent output, copied QR handling)
 - **Local Standard I/O (stdio)**: [examples/stdio_server.py](examples/stdio_server.py) (Desktop LLM clients, Claude Desktop, Cursor)
 - **Remote HTTP Server**: [examples/remote_http_server.py](examples/remote_http_server.py) (Hosted streamable-HTTP / SSE MCP endpoints with FastAPI)
 - **Full Sandbox Walkthrough**: [examples/sandbox_flow.py](examples/sandbox_flow.py)

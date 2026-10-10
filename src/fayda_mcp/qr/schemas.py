@@ -210,11 +210,11 @@ class QREvidence(BaseModel):
         ...,
         description="True if the issuer's RS256 digital signature verified against a trusted key",
     )
-    holder_authenticated: bool = Field(
+    holder_authenticated: Literal[False] = Field(
         default=False,
         description="Always False for QR scans. Physical card scan does not prove live holder presence.",
     )
-    identity_verified: bool = Field(
+    identity_verified: Literal[False] = Field(
         default=False,
         description="Always False for standalone QR scans without authenticated holder presence.",
     )
@@ -270,7 +270,7 @@ class QRVerificationResult(BaseModel):
         ...,
         description="Cryptographic signature verification status",
     )
-    holder_authenticated: bool = Field(
+    holder_authenticated: Literal[False] = Field(
         default=False,
         description="Strictly False for QR scans without biometric or live authentication",
     )

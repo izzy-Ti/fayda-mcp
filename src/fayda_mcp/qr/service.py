@@ -84,6 +84,12 @@ class FaydaQRVerificationService:
                 if ch == "credential_signature_valid":
                     checks[ch] = False
                     reasons[ch] = result.error_code or "signature_verification_failed"
+                elif ch == "holder_authenticated":
+                    checks[ch] = False
+                    reasons[ch] = "qr_scan_does_not_authenticate_holder"
+                elif ch == "identity_verified":
+                    checks[ch] = False
+                    reasons[ch] = "offline_qr_alone_cannot_assert_identity"
                 else:
                     checks[ch] = "unavailable"
                     reasons[ch] = "credential_signature_unverified"

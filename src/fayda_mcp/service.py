@@ -78,6 +78,13 @@ class FaydaVerificationService:
         self.audit = audit
         self._http = FaydaHttpClient(config=config, client=http_client)
         self.jwks = JwksCache(config=config)
+        from fayda_mcp.qr.service import FaydaQRVerificationService
+        self.qr_service = FaydaQRVerificationService(
+            config=self.config,
+            policy=self.policy,
+            results=self.results,
+            audit=self.audit,
+        )
 
     async def __aenter__(self) -> "FaydaVerificationService":
         return self
@@ -617,3 +624,37 @@ class FaydaVerificationService:
             )
 
         return result
+
+    async def submit_qr_verification(
+        self,
+        qr_text: Union[str, Any],
+        context: Optional[CallerContext] = None,
+        purpose: Optional[str] = None,
+        application_user_ref: Optional[str] = None,
+        checks: Optional[Sequence[str]] = None,
+        idempotency_key: Optional[str] = None,
+        dob_calendar: Optional[str] = None,
+        include_demographics: bool = False,
+    ) -> Any:
+        """Submit a Fayda QR code for offline verification, binding caller, purpose, and application user."""
+        return await self.qr_service.submit_qr_verification(
+            qr_text=qr_text,
+            context=context,
+            purpose=purpose,
+            application_user_ref=application_user_ref,
+            checks=checks,
+            idempotency_key=idempotency_key,
+            dob_calendar=dob_calendar,
+            include_demographics=include_demographics,
+        )
+
+    async def get_qr_verification_result(
+        self,
+        request_id: str,
+        context: Optional[CallerContext] = None,
+    ) -> Any:
+        """Retrieve a stored QR verification result by request ID, enforcing caller ownership."""
+        return await self.qr_service.get_qr_verification_result(
+            request_id=request_id,
+            context=context,
+        )

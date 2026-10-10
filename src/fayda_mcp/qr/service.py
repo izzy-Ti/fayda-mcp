@@ -7,12 +7,13 @@ and audit trail recording.
 
 from datetime import datetime, timezone
 import hashlib
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Union
 from uuid import uuid4
 
 from fayda_mcp.claims import evaluate_checks
 from fayda_mcp.config import FaydaConfig
 from fayda_mcp.context import CallerContext
+from fayda_mcp.exceptions import AuthorizationError, IdempotencyConflictError
 from fayda_mcp.policy import VerificationPolicy
 from fayda_mcp.predicates import parse_age_check
 from fayda_mcp.qr.decoder import decode_and_verify_qr
@@ -222,7 +223,13 @@ class FaydaQRVerificationService:
                 update={"checks_evaluated": evaluated_checks, "reasons": reasons}
             )
 
+        now_iso = datetime.now(timezone.utc).isoformat()
         final_result = QRVerificationResult(
+            request_id=f"qr_{uuid4().hex[:16]}",
+            application_user_ref=request.application_user_ref,
+            purpose=request.purpose,
+            verified_at=evidence.verified_at if evidence and evidence.verified_at else now_iso,
+            policy_version=self.policy.version if self.policy else "v1",
             status=status,
             credential_signature_valid=raw_result.credential_signature_valid,
             holder_authenticated=False,
@@ -236,29 +243,196 @@ class FaydaQRVerificationService:
 
         return final_result
 
+    def _result_from_record(self, record: Dict[str, Any]) -> QRVerificationResult:
+        """Reconstruct a QRVerificationResult from a persisted repository record."""
+        evidence_ref = record.get("evidence_ref")
+        evidence = None
+        if evidence_ref:
+            evidence = QREvidence(
+                evidence_type="qr_offline",
+                credential_signature_valid=bool(record.get("credential_signature_valid", True)),
+                holder_authenticated=False,
+                identity_verified=False,
+                qr_version=record.get("qr_version", 4),
+                verified_at=record.get("verified_at"),
+                key_thumbprint=record.get("key_thumbprint"),
+                evidence_ref=evidence_ref,
+                checks_evaluated=record.get("checks", {}),
+                reasons=record.get("reasons", {}),
+            )
+
+        return QRVerificationResult(
+            request_id=record.get("request_id"),
+            application_user_ref=record.get("application_user_ref"),
+            purpose=record.get("purpose"),
+            verified_at=record.get("verified_at"),
+            policy_version=record.get("policy_version"),
+            status=record.get("status", "verified"),
+            credential_signature_valid=bool(record.get("credential_signature_valid", True)),
+            holder_authenticated=False,
+            evidence=evidence,
+            demographics=None,  # Demographics never persisted or exposed from storage
+            checks=record.get("checks", {}),
+            reasons=record.get("reasons", {}),
+            error=record.get("error"),
+            error_code=record.get("error_code"),
+        )
+
+    async def submit_qr_verification(
+        self,
+        qr_text: Union[str, QRVerificationRequest],
+        context: Optional[CallerContext] = None,
+        purpose: Optional[str] = None,
+        application_user_ref: Optional[str] = None,
+        checks: Optional[Sequence[str]] = None,
+        idempotency_key: Optional[str] = None,
+        dob_calendar: Optional[str] = None,
+        include_demographics: bool = False,
+    ) -> QRVerificationResult:
+        """Submit a Fayda QR code for offline verification, binding caller, purpose, and application user.
+
+        Workflow:
+        1. Binds caller context (tenant_id, principal_id), business purpose, and host application user.
+        2. Idempotency deduplication: retries with identical idempotency key return cached result;
+           conflicting parameters raise IdempotencyConflictError.
+        3. Parses unchanged scanner text and cryptographically verifies detached RS256 signature.
+        4. Evaluates requested policy checks fail-closed under confirmed calendar.
+        5. Persists minimal evidence in Neon / ResultRepository and records non-PII audit event.
+        """
+        ctx = context or CallerContext()
+
+        if isinstance(qr_text, QRVerificationRequest):
+            req_checks = list(checks) if checks is not None else qr_text.checks
+            req_purpose = purpose or qr_text.purpose or "offline_verification"
+            req_user = application_user_ref or qr_text.application_user_ref
+            req_idemp = idempotency_key or qr_text.idempotency_key
+            req_calendar = dob_calendar if dob_calendar is not None else qr_text.dob_calendar
+            req_include_demo = include_demographics or qr_text.include_demographics
+            raw_text = qr_text.qr_text
+        else:
+            req_checks = list(checks) if checks is not None else ["credential_signature_valid"]
+            req_purpose = purpose or "offline_verification"
+            req_user = application_user_ref
+            req_idemp = idempotency_key
+            req_calendar = dob_calendar
+            req_include_demo = include_demographics
+            raw_text = qr_text
+
+        # 1. Idempotency lookup
+        if req_idemp and self.results:
+            existing = await self.results.find_by_idempotency_key(
+                tenant_id=ctx.tenant_id,
+                principal_id=ctx.principal_id,
+                idempotency_key=req_idemp,
+            )
+            if existing:
+                if (
+                    existing.get("purpose") != req_purpose
+                    or existing.get("application_user_ref") != req_user
+                ):
+                    raise IdempotencyConflictError(
+                        f"Idempotency key '{req_idemp}' has already been used with different parameters"
+                    )
+                return self._result_from_record(existing)
+
+        # 2. Build verified request model
+        request = QRVerificationRequest(
+            qr_text=raw_text,
+            checks=req_checks,
+            purpose=req_purpose,
+            application_user_ref=req_user,
+            idempotency_key=req_idemp,
+            dob_calendar=req_calendar,
+            include_demographics=req_include_demo,
+        )
+
+        # 3. Synchronously verify signature and evaluate policy
+        result = self.verify_qr_sync(request, context=ctx)
+
+        # Ensure binding attributes are populated
+        req_id = result.request_id or f"qr_{uuid4().hex[:16]}"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        result = result.model_copy(
+            update={
+                "request_id": req_id,
+                "application_user_ref": req_user,
+                "purpose": req_purpose,
+                "verified_at": result.verified_at or now_iso,
+                "policy_version": self.policy.version if self.policy else "v1",
+            }
+        )
+
+        # 4. Persist minimal evidence in ResultRepository (Neon / Memory)
+        if self.results:
+            ttl_seconds = self.config.result_ttl_seconds if self.config else 900
+            record_data = {
+                "request_id": req_id,
+                "tenant_id": ctx.tenant_id,
+                "principal_id": ctx.principal_id,
+                "purpose": req_purpose,
+                "application_user_ref": req_user,
+                "idempotency_key": req_idemp,
+                "status": result.status,
+                "credential_signature_valid": result.credential_signature_valid,
+                "holder_authenticated": False,
+                "identity_verified": False,
+                "checks": result.checks,
+                "reasons": result.reasons,
+                "evidence_ref": result.evidence.evidence_ref if result.evidence else None,
+                "key_thumbprint": result.evidence.key_thumbprint if result.evidence else None,
+                "qr_version": result.evidence.qr_version if result.evidence else 4,
+                "verified_at": result.verified_at,
+                "policy_version": result.policy_version,
+                "method": "qr_offline",
+                "created_at": now_iso,
+            }
+            await self.results.save_request(
+                request_id=req_id,
+                data=record_data,
+                ttl_seconds=ttl_seconds,
+            )
+
+        # 5. Persist audit log event
+        if self.audit:
+            evidence_ref = result.evidence.evidence_ref if result.evidence else None
+            await self.audit.record_event(
+                event_type="qr_verification",
+                safe_metadata={
+                    "request_id": req_id,
+                    "tenant_id": ctx.tenant_id,
+                    "principal_id": ctx.principal_id,
+                    "purpose": req_purpose,
+                    "application_user_ref": req_user,
+                    "status": result.status,
+                    "credential_signature_valid": result.credential_signature_valid,
+                    "evidence_ref": evidence_ref,
+                    "checks": result.checks,
+                    "method": "qr_offline",
+                },
+            )
+
+        return result
+
+    async def get_qr_verification_result(
+        self,
+        request_id: str,
+        context: Optional[CallerContext] = None,
+    ) -> Optional[QRVerificationResult]:
+        """Retrieve a stored QR verification result by request ID, enforcing caller ownership."""
+        if not self.results:
+            return None
+        rec = await self.results.get_request(request_id)
+        if not rec:
+            return None
+        ctx = context or CallerContext()
+        if rec.get("tenant_id") and rec["tenant_id"] != ctx.tenant_id:
+            raise AuthorizationError(f"Access denied to verification request '{request_id}'")
+        return self._result_from_record(rec)
+
     async def verify_qr(
         self,
         request: QRVerificationRequest,
         context: Optional[CallerContext] = None,
     ) -> QRVerificationResult:
         """Asynchronously verify a Fayda QR code, record audit events, and persist results."""
-        result = self.verify_qr_sync(request, context=context)
-
-        # Audit logging (no raw PII or secret material)
-        if self.audit:
-            tenant_id = context.tenant_id if context else "default"
-            principal_id = context.principal_id if context else "anonymous"
-            evidence_ref = result.evidence.evidence_ref if result.evidence else None
-            await self.audit.record_event(
-                event_type="qr_verification",
-                safe_metadata={
-                    "tenant_id": tenant_id,
-                    "principal_id": principal_id,
-                    "status": result.status,
-                    "credential_signature_valid": result.credential_signature_valid,
-                    "evidence_ref": evidence_ref,
-                    "checks": result.checks,
-                },
-            )
-
-        return result
+        return await self.submit_qr_verification(request, context=context)

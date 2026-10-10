@@ -290,6 +290,26 @@ class QRVerificationResult(BaseModel):
         default_factory=dict,
         description="Safe reason codes for unavailable or failed checks",
     )
+    request_id: Optional[str] = Field(
+        default=None,
+        description="Unique opaque verification request identifier",
+    )
+    application_user_ref: Optional[str] = Field(
+        default=None,
+        description="Bound application user reference",
+    )
+    purpose: Optional[str] = Field(
+        default=None,
+        description="Bound verification purpose",
+    )
+    verified_at: Optional[str] = Field(
+        default=None,
+        description="ISO 8601 UTC timestamp of verification completion",
+    )
+    policy_version: Optional[str] = Field(
+        default=None,
+        description="Evaluated policy version",
+    )
     error: Optional[str] = Field(
         default=None,
         description="Safe, non-sensitive error message if verification failed",
@@ -321,6 +341,10 @@ class QRVerificationRequest(BaseModel):
     application_user_ref: Optional[str] = Field(
         default=None,
         description="Opaque application user reference",
+    )
+    idempotency_key: Optional[str] = Field(
+        default=None,
+        description="Unique caller idempotency key for deduplicating retries",
     )
     dob_calendar: Optional[str] = Field(
         default=None,

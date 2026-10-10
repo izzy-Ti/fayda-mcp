@@ -98,6 +98,11 @@ class QRTrustStore:
         """Return all active trusted keys."""
         return list(self._keys_by_thumbprint.values())
 
+    get_all_keys = get_keys
+
+    def __len__(self) -> int:
+        return len(self._keys_by_thumbprint)
+
     def get_key_by_thumbprint(self, thumbprint: str) -> Optional[TrustedKey]:
         """Lookup key by full SHA-256 thumbprint or leading hex prefix."""
         if thumbprint in self._keys_by_thumbprint:

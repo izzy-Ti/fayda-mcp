@@ -64,6 +64,7 @@ def verification_service(trust_store: QRTrustStore) -> FaydaVerificationService:
         jwks_uri="https://issuer.example.com/.well-known/jwks.json",
         session_ttl_seconds=300,
         result_ttl_seconds=600,
+        qr_verification_enabled=True,
     )
     svc = FaydaVerificationService(
         config=config,

@@ -490,6 +490,7 @@ async def test_fayda_verification_service_forwards_qr_success_hook():
         token_endpoint="https://esignet.fayda.et/token",
         userinfo_endpoint="https://esignet.fayda.et/userinfo",
         jwks_uri="https://esignet.fayda.et/jwks",
+        qr_verification_enabled=True,
     )
 
     service = FaydaVerificationService(

@@ -52,8 +52,48 @@ class FaydaConfig(BaseModel):
     age_evaluation_timezone: str = Field(default="Africa/Addis_Ababa", description="Host evaluation timezone for age checks")
     february_29_anniversary: str = Field(default="march_1", description="Anniversary rule for Feb 29 birthdates in common years ('march_1' or 'february_28')")
     claims_locales: List[str] = Field(default_factory=lambda: ["en", "am", "om", "so", "ti", "sid", "wal"], description="Permitted/supported selection locales")
-    qr_key_bundle_path: Optional[str] = Field(default=None, description="Path to operator-managed QR public key bundle or directory")
-    qr_public_key_pem: Optional[str] = Field(default=None, description="Inline operator-approved QR public key PEM string")
+
+    # QR verification settings (Task 19)
+    qr_verification_enabled: bool = Field(
+        default=False,
+        description="Enable offline Fayda QR verification route. Default is False (disabled) for fail-closed security.",
+    )
+    qr_profile: str = Field(
+        default="v4",
+        description="Default/target QR format profile version (e.g. 'v4')",
+    )
+    qr_allowed_profiles: List[str] = Field(
+        default_factory=lambda: ["v4"],
+        description="Permitted QR specification profiles (e.g. ['v4'])",
+    )
+    qr_key_bundle_path: Optional[str] = Field(
+        default=None,
+        description="Path to operator-managed QR public key bundle or directory",
+    )
+    qr_public_key_pem: Optional[str] = Field(
+        default=None,
+        description="Inline operator-approved QR public key PEM string",
+    )
+    qr_max_text_size_bytes: int = Field(
+        default=16384,
+        description="Maximum permitted QR scanner text size in bytes (bounded memory protection, default 16KB)",
+    )
+    qr_dob_calendar: str = Field(
+        default="gregorian",
+        description="Default confirmed calendar convention for QR DOB claims ('gregorian' or 'ethiopic')",
+    )
+    qr_confirmed_calendars: List[str] = Field(
+        default_factory=lambda: ["gregorian", "ethiopic"],
+        description="List of recognized confirmed calendar systems for QR age predicates",
+    )
+
+    def load_qr_trust_store(self) -> Any:
+        """Instantiate a QRTrustStore from configured bundle path or inline PEM."""
+        from fayda_mcp.qr.trust import load_trust_store_from_config
+        return load_trust_store_from_config(
+            bundle_path=self.qr_key_bundle_path,
+            inline_pem=self.qr_public_key_pem,
+        )
 
     @classmethod
     def from_env(cls, env_prefix: str = "FAYDA_", dotenv_path: Optional[str] = None) -> "FaydaConfig":
@@ -175,6 +215,52 @@ class FaydaConfig(BaseModel):
             claims_locales=[
                 loc.strip() for loc in get_val(f"{env_prefix}CLAIMS_LOCALES", "CLAIMS_LOCALES", default="en am om so ti sid wal").replace(",", " ").split() if loc.strip()
             ],
+            qr_verification_enabled=get_val(
+                f"{env_prefix}QR_VERIFICATION_ENABLED",
+                f"{env_prefix}QR_ENABLED",
+                "QR_VERIFICATION_ENABLED",
+                "QR_ENABLED",
+                default="false",
+            ).strip().lower() in ("true", "1", "yes", "on", "enabled"),
+            qr_profile=get_val(
+                f"{env_prefix}QR_PROFILE",
+                "QR_PROFILE",
+                default="v4",
+            ),
+            qr_allowed_profiles=[
+                p.strip()
+                for p in get_val(
+                    f"{env_prefix}QR_ALLOWED_PROFILES",
+                    "QR_ALLOWED_PROFILES",
+                    default="v4",
+                ).replace(",", " ").split()
+                if p.strip()
+            ] or ["v4"],
+            qr_max_text_size_bytes=int(
+                get_val(
+                    f"{env_prefix}QR_MAX_TEXT_SIZE_BYTES",
+                    f"{env_prefix}QR_MAX_SIZE_BYTES",
+                    "QR_MAX_TEXT_SIZE_BYTES",
+                    "QR_MAX_SIZE_BYTES",
+                    default="16384",
+                )
+            ),
+            qr_dob_calendar=get_val(
+                f"{env_prefix}QR_DOB_CALENDAR",
+                f"{env_prefix}QR_CALENDAR",
+                "QR_DOB_CALENDAR",
+                "QR_CALENDAR",
+                default="gregorian",
+            ),
+            qr_confirmed_calendars=[
+                c.strip().lower()
+                for c in get_val(
+                    f"{env_prefix}QR_CONFIRMED_CALENDARS",
+                    "QR_CONFIRMED_CALENDARS",
+                    default="gregorian ethiopic",
+                ).replace(",", " ").split()
+                if c.strip()
+            ] or ["gregorian", "ethiopic"],
             qr_key_bundle_path=get_val(f"{env_prefix}QR_KEY_BUNDLE_PATH", "QR_KEY_BUNDLE_PATH", default="") or None,
             qr_public_key_pem=get_val(f"{env_prefix}QR_PUBLIC_KEY_PEM", "QR_PUBLIC_KEY_PEM", default="") or None,
         )

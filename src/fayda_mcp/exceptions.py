@@ -33,6 +33,18 @@ class ConfigurationError(FaydaMCPError):
         super().__init__(message=message, code="configuration_error", details=details)
 
 
+class QRVerificationDisabledError(ConfigurationError):
+    """Raised when offline QR verification is invoked while disabled by configuration."""
+
+    def __init__(
+        self,
+        message: str = "Fayda QR verification is disabled by configuration",
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message=message, details=details)
+        self.code = "qr_verification_disabled"
+
+
 class AuthenticationError(FaydaMCPError):
     """Raised when authentication credentials or token validation fails."""
 

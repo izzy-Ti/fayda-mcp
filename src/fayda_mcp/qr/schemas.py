@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field
 
-from fayda_mcp.exceptions import FaydaMCPError
+from fayda_mcp.exceptions import ConfigurationError, FaydaMCPError, QRVerificationDisabledError
 from fayda_mcp.schemas import CheckOutcomeType
 
 # Maximum allowed size for raw scanner input (bounded memory protection)
@@ -20,6 +20,7 @@ SUPPORTED_QR_VERSIONS = (4,)
 class QRErrorCode(str, Enum):
     """Machine-readable safe error codes for QR processing."""
 
+    VERIFICATION_DISABLED = "qr_verification_disabled"
     MALFORMED_INPUT = "qr_malformed_input"
     DELIMITER_ERROR = "qr_delimiter_error"
     UNSUPPORTED_VERSION = "qr_unsupported_version"

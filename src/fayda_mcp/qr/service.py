@@ -21,6 +21,7 @@ from fayda_mcp.exceptions import (
     HostSuccessHookError,
     IdempotencyConflictError,
     InvalidStateError,
+    QRVerificationDisabledError,
 )
 from fayda_mcp.policy import VerificationPolicy
 from fayda_mcp.predicates import parse_age_check
@@ -70,16 +71,26 @@ class FaydaQRVerificationService:
         success_hook: Optional[
             Callable[[HostUserSuccessContext], Union[None, Awaitable[None]]]
         ] = None,
+        enabled: Optional[bool] = None,
     ):
-        self.config = config or FaydaConfig(
-            client_id="default_qr_verifier",
-            redirect_uri="https://localhost/callback",
-            issuer="https://esignet.fayda.et",
-            authorization_endpoint="https://esignet.fayda.et/authorize",
-            token_endpoint="https://esignet.fayda.et/token",
-            userinfo_endpoint="https://esignet.fayda.et/userinfo",
-            jwks_uri="https://esignet.fayda.et/jwks",
-        )
+        if config is None:
+            # Standalone QR service instantiation defaults to enabled=True unless explicitly disabled
+            is_enabled = enabled if enabled is not None else True
+            self.config = FaydaConfig(
+                client_id="default_qr_verifier",
+                redirect_uri="https://localhost/callback",
+                issuer="https://esignet.fayda.et",
+                authorization_endpoint="https://esignet.fayda.et/authorize",
+                token_endpoint="https://esignet.fayda.et/token",
+                userinfo_endpoint="https://esignet.fayda.et/userinfo",
+                jwks_uri="https://esignet.fayda.et/jwks",
+                qr_verification_enabled=is_enabled,
+            )
+        else:
+            self.config = config
+            if enabled is not None:
+                self.config = self.config.model_copy(update={"qr_verification_enabled": enabled})
+
         self.trust_store = trust_store or load_trust_store_from_config(
             bundle_path=self.config.qr_key_bundle_path,
             inline_pem=self.config.qr_public_key_pem,
@@ -143,10 +154,15 @@ class FaydaQRVerificationService:
         checks: Dict[str, Any] = {}
         reasons: Dict[str, str] = {}
 
+        confirmed_cals = (
+            [c.strip().lower() for c in self.config.qr_confirmed_calendars]
+            if self.config and self.config.qr_confirmed_calendars
+            else list(CONFIRMED_CALENDARS)
+        )
         is_cal_confirmed = (
             bool(calendar)
             and isinstance(calendar, str)
-            and calendar.strip().lower() in CONFIRMED_CALENDARS
+            and calendar.strip().lower() in confirmed_cals
         )
 
         if not result.credential_signature_valid or not result.demographics:
@@ -239,6 +255,28 @@ class FaydaQRVerificationService:
         context: Optional[CallerContext] = None,
     ) -> QRVerificationResult:
         """Synchronously verify a Fayda QR code and evaluate requested checks."""
+        # 0. Check if QR verification is enabled
+        if not self.config.qr_verification_enabled:
+            raise QRVerificationDisabledError(
+                "Fayda QR verification is disabled by configuration. "
+                "Enable it via qr_verification_enabled=True or FAYDA_QR_VERIFICATION_ENABLED=true."
+            )
+
+        # 0.1 Check scanner text size limit
+        raw_bytes = len(request.qr_text.encode("utf-8"))
+        if raw_bytes > self.config.qr_max_text_size_bytes:
+            return QRVerificationResult(
+                status="malformed_input",
+                credential_signature_valid=False,
+                holder_authenticated=False,
+                evidence=None,
+                demographics=None,
+                checks={c: False if c == "credential_signature_valid" else "unavailable" for c in (request.checks or ["credential_signature_valid"])},
+                reasons={c: QRErrorCode.PAYLOAD_SIZE_EXCEEDED.value for c in (request.checks or ["credential_signature_valid"])},
+                error=f"QR payload size ({raw_bytes} bytes) exceeds maximum configured limit of {self.config.qr_max_text_size_bytes} bytes",
+                error_code=QRErrorCode.PAYLOAD_SIZE_EXCEEDED.value,
+            )
+
         # 1. Enforce tenant policy if configured
         if self.policy:
             if request.purpose:
@@ -248,9 +286,14 @@ class FaydaQRVerificationService:
 
         # 2. Determine calendar convention
         calendar_candidate = request.dob_calendar if request.dob_calendar is not None else (
-            self.config.dob_source_calendar if self.config else "gregorian"
+            self.config.qr_dob_calendar if self.config else "gregorian"
         )
-        if calendar_candidate and isinstance(calendar_candidate, str) and calendar_candidate.strip().lower() in CONFIRMED_CALENDARS:
+        confirmed_cals = (
+            [c.strip().lower() for c in self.config.qr_confirmed_calendars]
+            if self.config and self.config.qr_confirmed_calendars
+            else list(CONFIRMED_CALENDARS)
+        )
+        if calendar_candidate and isinstance(calendar_candidate, str) and calendar_candidate.strip().lower() in confirmed_cals:
             confirmed_calendar = calendar_candidate.strip().lower()
         else:
             confirmed_calendar = "unconfirmed"
@@ -261,6 +304,8 @@ class FaydaQRVerificationService:
             trust_store=self.trust_store,
             dob_calendar=confirmed_calendar,
             include_demographics=True,
+            max_bytes=self.config.qr_max_text_size_bytes,
+            allowed_profiles=self.config.qr_allowed_profiles,
         )
 
         # 4. Evaluate requested boolean predicates
@@ -421,6 +466,13 @@ class FaydaQRVerificationService:
         7. Explicit host users-table success hook: invokes registered hook strictly on verified outcomes.
         """
         ctx = context or CallerContext()
+
+        # 0. Enforce QR verification enabled setting
+        if not self.config.qr_verification_enabled:
+            raise QRVerificationDisabledError(
+                "Fayda QR verification is disabled by configuration. "
+                "Enable it via qr_verification_enabled=True or FAYDA_QR_VERIFICATION_ENABLED=true."
+            )
 
         if isinstance(qr_text, QRVerificationRequest):
             req_checks = list(checks) if checks is not None else qr_text.checks

@@ -217,6 +217,7 @@ async def test_fayda_verification_service_delegates_submit_qr_verification(
         token_endpoint="https://esignet.sandbox.fayda.et/token",
         userinfo_endpoint="https://esignet.sandbox.fayda.et/userinfo",
         jwks_uri="https://esignet.sandbox.fayda.et/jwks",
+        qr_verification_enabled=True,
     )
     sessions = MemorySessionStore()
     results = MemoryResultRepository()

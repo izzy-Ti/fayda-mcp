@@ -23,6 +23,8 @@ def decode_and_verify_qr(
     trust_store: Optional[QRTrustStore] = None,
     dob_calendar: str = "gregorian",
     include_demographics: bool = True,
+    max_bytes: Optional[int] = None,
+    allowed_profiles: Optional[Sequence[str]] = None,
 ) -> QRVerificationResult:
     """Decode all observed fields from a Fayda QR code and perform cryptographic validation.
 
@@ -35,7 +37,10 @@ def decode_and_verify_qr(
     """
     # 1. Parse raw scanner text and extract all observed fields
     try:
-        parsed = parse_qr_code(raw_text, dob_calendar=dob_calendar)
+        parse_kwargs: Dict[str, Any] = {"dob_calendar": dob_calendar}
+        if max_bytes is not None:
+            parse_kwargs["max_bytes"] = max_bytes
+        parsed = parse_qr_code(raw_text, **parse_kwargs)
     except QRVerificationError as err:
         return QRVerificationResult(
             status="malformed_input",
@@ -48,6 +53,23 @@ def decode_and_verify_qr(
             error=err.message,
             error_code=err.code,
         )
+
+    # 1.1 Check allowed profiles / versions
+    if allowed_profiles is not None:
+        v_str = f"v{parsed.demographics.version}".lower()
+        allowed = [p.lower() for p in allowed_profiles]
+        if v_str not in allowed and str(parsed.demographics.version) not in allowed:
+            return QRVerificationResult(
+                status="rejected",
+                credential_signature_valid=False,
+                holder_authenticated=False,
+                evidence=None,
+                demographics=parsed.demographics if include_demographics else None,
+                checks={"credential_signature_valid": False},
+                reasons={"credential_signature_valid": QRErrorCode.UNSUPPORTED_VERSION.value},
+                error=f"QR profile '{v_str}' is not in allowed profiles: {list(allowed_profiles)}",
+                error_code=QRErrorCode.UNSUPPORTED_VERSION.value,
+            )
 
     # 2. Check trust store availability (missing keys/profile returns 'unverified')
     if trust_store is None or trust_store.is_empty():

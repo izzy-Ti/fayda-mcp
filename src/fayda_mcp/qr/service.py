@@ -413,6 +413,21 @@ class FaydaQRVerificationService:
 
         return result
 
+    def _authorize_caller(self, record: Dict[str, Any], context: CallerContext) -> None:
+        """Enforce tenant and caller principal isolation."""
+        if record.get("tenant_id") and record.get("tenant_id") != context.tenant_id:
+            raise AuthorizationError("Access denied: tenant mismatch")
+
+        record_principal = record.get("principal_id")
+        if (
+            record_principal
+            and record_principal != "anonymous"
+            and record_principal != context.principal_id
+            and "verification:admin" not in context.scopes
+            and "*" not in context.scopes
+        ):
+            raise AuthorizationError("Access denied: caller principal mismatch")
+
     async def get_qr_verification_result(
         self,
         request_id: str,
@@ -425,8 +440,7 @@ class FaydaQRVerificationService:
         if not rec:
             return None
         ctx = context or CallerContext()
-        if rec.get("tenant_id") and rec["tenant_id"] != ctx.tenant_id:
-            raise AuthorizationError(f"Access denied to verification request '{request_id}'")
+        self._authorize_caller(rec, ctx)
         return self._result_from_record(rec)
 
     async def verify_qr(

@@ -6,7 +6,8 @@ from fayda_mcp.context import (
     CallerContext,
     SimpleCallerAdapter,
 )
-from fayda_mcp.exceptions import AuthorizationError
+from fayda_mcp.exceptions import AuthorizationError, VerificationNotFoundError
+from fayda_mcp.qr.schemas import QRVerificationResult
 from fayda_mcp.schemas import (
     CancelVerificationResponse,
     StartVerificationResponse,
@@ -116,3 +117,62 @@ def register_tools(
             raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:cancel'")
 
         return await service.cancel_verification(context=ctx, request_id=request_id)
+
+    @server.tool()
+    async def submit_qr_verification(
+        qr_text: str,
+        purpose: Optional[str] = None,
+        application_user_ref: Optional[str] = None,
+        checks: Optional[List[str]] = None,
+        idempotency_key: Optional[str] = None,
+        dob_calendar: Optional[str] = None,
+    ) -> QRVerificationResult:
+        """Submit a Fayda QR code for offline verification and predicate evaluation.
+
+        Args:
+            qr_text: Raw scanned QR text string.
+            purpose: Approved business purpose for verification.
+            application_user_ref: Opaque host application reference for the user.
+            checks: Permitted boolean checks to evaluate (e.g. ['credential_signature_valid', 'age_over_18']).
+            idempotency_key: Unique caller key preventing duplicate submissions.
+            dob_calendar: Optional DOB calendar system ('gregorian' or 'ethiopian').
+        """
+        ctx = await adapter.resolve_context(
+            "submit_qr_verification",
+            qr_text=qr_text,
+            purpose=purpose,
+            application_user_ref=application_user_ref,
+            checks=checks,
+            idempotency_key=idempotency_key,
+            dob_calendar=dob_calendar,
+        )
+        allowed = await adapter.authorize(ctx, "verification:create", None)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:create'")
+
+        return await service.submit_qr_verification(
+            qr_text=qr_text,
+            context=ctx,
+            purpose=purpose,
+            application_user_ref=application_user_ref,
+            checks=checks,
+            idempotency_key=idempotency_key,
+            dob_calendar=dob_calendar,
+        )
+
+    @server.tool()
+    async def get_qr_verification_result(request_id: str) -> QRVerificationResult:
+        """Retrieve minimal QR verification result by opaque request identifier.
+
+        Args:
+            request_id: Unique QR verification request identifier.
+        """
+        ctx = await adapter.resolve_context("get_qr_verification_result", request_id=request_id)
+        allowed = await adapter.authorize(ctx, "verification:read", request_id)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:read'")
+
+        result = await service.get_qr_verification_result(request_id=request_id, context=ctx)
+        if result is None:
+            raise VerificationNotFoundError(f"QR verification request '{request_id}' not found")
+        return result

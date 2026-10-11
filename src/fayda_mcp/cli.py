@@ -363,7 +363,7 @@ def handle_run(args: argparse.Namespace) -> int:
 
         if transport == "stdio":
             # Under stdio transport, stdout is reserved strictly for MCP JSON-RPC protocol
-            server.run(transport="stdio")
+            server.run(transport="stdio", show_banner=False)
             return 0
         elif transport == "http":
             # Local combined HTTP mode: hosts MCP endpoint and registered callback using the same service instance

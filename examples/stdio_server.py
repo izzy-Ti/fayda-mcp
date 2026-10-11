@@ -75,7 +75,7 @@ def main() -> None:
 
     # 4. Run server over standard I/O transport
     # Note: FastMCP.run() defaults to stdio transport
-    server.run(transport="stdio")
+    server.run(transport="stdio", show_banner=False)
 
 
 if __name__ == "__main__":

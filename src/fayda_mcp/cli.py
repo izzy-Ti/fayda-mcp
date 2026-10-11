@@ -252,11 +252,11 @@ def handle_check_config(args: argparse.Namespace) -> int:
             validate_callback_uri(args.callback_uri)
 
         # Validate storage mode if specified
-        storage_mode = getattr(args, "storage", "memory") or "memory"
+        storage_mode = getattr(args, "storage", None) or getattr(cfg, "storage_mode", None) or os.environ.get("STORAGE_MODE", "memory")
         init_storage(
             storage_mode=storage_mode,
-            redis_url=getattr(args, "redis_url", None),
-            database_url=getattr(args, "database_url", None),
+            redis_url=getattr(args, "redis_url", None) or os.environ.get("REDIS_URL"),
+            database_url=getattr(args, "database_url", None) or os.environ.get("DATABASE_URL"),
         )
 
         has_key = bool(cfg.signing_key or cfg.signing_key_path)
@@ -344,11 +344,11 @@ def handle_run(args: argparse.Namespace) -> int:
             validate_callback_uri(cfg.redirect_uri)
 
         # 4. Validate and initialize storage stores
-        storage_mode = getattr(args, "storage", "memory") or "memory"
+        storage_mode = getattr(args, "storage", None) or getattr(cfg, "storage_mode", None) or os.environ.get("STORAGE_MODE", "memory")
         sessions, results = init_storage(
             storage_mode=storage_mode,
-            redis_url=getattr(args, "redis_url", None),
-            database_url=getattr(args, "database_url", None),
+            redis_url=getattr(args, "redis_url", None) or os.environ.get("REDIS_URL"),
+            database_url=getattr(args, "database_url", None) or os.environ.get("DATABASE_URL"),
         )
 
         # 5. Validate and initialize caller adapter
@@ -437,8 +437,8 @@ def create_parser() -> argparse.ArgumentParser:
     check_p.add_argument(
         "--storage",
         choices=["memory", "redis", "postgres", "redis+postgres"],
-        default="memory",
-        help="Storage mode to validate (default: memory)",
+        default=None,
+        help="Storage mode to validate (default: from config or memory)",
     )
     check_p.add_argument("--redis-url", help="Redis connection URL")
     check_p.add_argument("--database-url", help="Database connection URL")
@@ -462,8 +462,8 @@ def create_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--storage",
         choices=["memory", "redis", "postgres", "redis+postgres"],
-        default="memory",
-        help="Session and result storage mode (default: memory)",
+        default=None,
+        help="Session and result storage mode (default: from config or memory)",
     )
     run_p.add_argument("--redis-url", help="Redis connection URL for redis storage mode")
     run_p.add_argument("--database-url", help="PostgreSQL connection URL for postgres storage mode")

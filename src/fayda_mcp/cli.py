@@ -385,7 +385,10 @@ def handle_run(args: argparse.Namespace) -> int:
                     mcp_path="/mcp",
                 )
 
-                uvicorn.run(app, host=host, port=port)
+                uv_kwargs: dict[str, Any] = {"host": host, "port": port}
+                if sys.platform == "win32":
+                    uv_kwargs["loop"] = "asyncio:SelectorEventLoop"
+                uvicorn.run(app, **uv_kwargs)
                 return 0
             except ImportError:
                 # Fallback to server SSE run if fastapi/uvicorn is not installed

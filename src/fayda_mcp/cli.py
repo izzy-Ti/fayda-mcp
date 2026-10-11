@@ -385,6 +385,7 @@ def handle_run(args: argparse.Namespace) -> int:
                     mcp_path="/mcp",
                 )
 
+                sys.stderr.write(f"Starting Fayda MCP HTTP server on {host}:{port} [storage: {storage_mode}]\n")
                 uv_kwargs: dict[str, Any] = {"host": host, "port": port}
                 if sys.platform == "win32":
                     uv_kwargs["loop"] = "asyncio:SelectorEventLoop"

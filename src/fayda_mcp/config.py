@@ -1,8 +1,53 @@
 """Validated configuration for Fayda eSignet integration."""
 
 import os
-from typing import Any, List, Optional
+import re
+from typing import Any, List, Optional, Union
 from pydantic import BaseModel, Field
+
+
+def parse_expiration_time(
+    raw_val: Union[str, int, float, None],
+    unit_hint: Optional[str] = None,
+    default_seconds: int = 120,
+) -> int:
+    """Parse and confirm expiration time unit into integer seconds.
+
+    Supports:
+    - String with units: '15m', '15min', '900s', '1h', etc.
+    - Explicit unit_hint ('minutes', 'seconds', etc.)
+    - Fayda Portal numeric default: Fayda exports EXPIRATION_TIME=15 (minutes).
+      Values <= 60 without explicit unit designation are interpreted as minutes (val * 60).
+      Values > 60 without unit designation are interpreted as seconds.
+    """
+    if raw_val is None:
+        return default_seconds
+
+    val_str = str(raw_val).strip()
+    if not val_str:
+        return default_seconds
+
+    match = re.match(r"^([0-9]+(?:\.[0-9]+)?)\s*([a-zA-Z]*)$", val_str.lower())
+    if not match:
+        return default_seconds
+
+    clean_num = float(match.group(1))
+    suffix_unit = match.group(2).strip()
+    unit = suffix_unit or (unit_hint.lower().strip() if unit_hint else "")
+
+    if unit in ("m", "min", "mins", "minute", "minutes"):
+        return max(1, int(clean_num * 60))
+    elif unit in ("s", "sec", "secs", "second", "seconds"):
+        return max(1, int(clean_num))
+    elif unit in ("h", "hr", "hrs", "hour", "hours"):
+        return max(1, int(clean_num * 3600))
+    elif unit in ("ms", "msec", "millis", "millisecond", "milliseconds"):
+        return max(1, int(clean_num / 1000.0))
+    else:
+        # Confirm expiry unit: Fayda portal exports EXPIRATION_TIME=15 which represents 15 minutes.
+        if clean_num <= 60:
+            return max(1, int(clean_num * 60))
+        return max(1, int(clean_num))
 
 
 class FaydaConfig(BaseModel):
@@ -20,6 +65,11 @@ class FaydaConfig(BaseModel):
     signing_key_path: Optional[str] = Field(default=None, description="Path to client private signing key")
     signing_key: Optional[str] = Field(default=None, repr=False, description="Direct client private signing key in PEM format")
     key_id: Optional[str] = Field(default=None, description="Key ID (kid) for JWS client assertion headers")
+    algorithm: str = Field(default="RS256", description="JWS signing algorithm for client assertions")
+    client_assertion_type: str = Field(
+        default="urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        description="Client assertion type",
+    )
 
     def to_redacted_dict(self) -> dict[str, Any]:
         """Return configuration dictionary with all secret material redacted."""
@@ -27,7 +77,6 @@ class FaydaConfig(BaseModel):
         if data.get("signing_key"):
             data["signing_key"] = "[REDACTED]"
         return data
-
 
     # Cryptographic & network settings
     allowed_algorithms: List[str] = Field(default_factory=lambda: ["RS256"])
@@ -97,11 +146,18 @@ class FaydaConfig(BaseModel):
 
     @classmethod
     def from_env(cls, env_prefix: str = "FAYDA_", dotenv_path: Optional[str] = None) -> "FaydaConfig":
-        """Explicit helper to load configuration from environment variables or .env file."""
+        """Explicit helper to load configuration from environment variables or .env file.
+
+        Priority order:
+        1. FAYDA_ prefixed variables (e.g. FAYDA_CLIENT_ID, FAYDA_JWKS_URL)
+        2. Standard/Portal variables (e.g. CLIENT_ID, PRIVATE_KEY, EXPIRATION_TIME)
+        3. Trusted OIDC discovery for unresolved endpoints (issuer, jwks_uri)
+        4. Safe domain-derived fallback endpoints
+        """
         if dotenv_path:
             try:
                 from dotenv import load_dotenv
-                load_dotenv(dotenv_path)
+                load_dotenv(dotenv_path, override=False)
             except ImportError:
                 pass
 
@@ -114,41 +170,64 @@ class FaydaConfig(BaseModel):
 
         client_id = get_val(f"{env_prefix}CLIENT_ID", "CLIENT_ID")
         redirect_uri = get_val(f"{env_prefix}REDIRECT_URI", "REDIRECT_URI")
+
         auth_endpoint = get_val(
-            f"{env_prefix}AUTHORIZATION_URL",
             f"{env_prefix}AUTHORIZATION_ENDPOINT",
-            "AUTHORIZATION_URL",
+            f"{env_prefix}AUTHORIZATION_URL",
             "AUTHORIZATION_ENDPOINT",
+            "AUTHORIZATION_URL",
         )
         token_endpoint = get_val(
-            f"{env_prefix}TOKEN_URL",
             f"{env_prefix}TOKEN_ENDPOINT",
-            "TOKEN_URL",
+            f"{env_prefix}TOKEN_URL",
             "TOKEN_ENDPOINT",
+            "TOKEN_URL",
         )
         userinfo_endpoint = get_val(
-            f"{env_prefix}USERINFO_URL",
             f"{env_prefix}USERINFO_ENDPOINT",
-            "USERINFO_URL",
+            f"{env_prefix}USERINFO_URL",
             "USERINFO_ENDPOINT",
+            "USERINFO_URL",
         )
 
-        # Derive issuer if not explicit
-        issuer = get_val(f"{env_prefix}ISSUER_URL", f"{env_prefix}ISSUER", "ISSUER_URL", "ISSUER")
-        if not issuer and auth_endpoint:
+        explicit_issuer = get_val(f"{env_prefix}ISSUER", f"{env_prefix}ISSUER_URL", "ISSUER", "ISSUER_URL")
+        explicit_jwks_uri = get_val(f"{env_prefix}JWKS_URI", f"{env_prefix}JWKS_URL", "JWKS_URI", "JWKS_URL")
+
+        # 4. Resolve issuer and JWKS URL through trusted OIDC discovery with explicit overrides
+        discovered: Optional[dict[str, Any]] = None
+        if not explicit_issuer or not explicit_jwks_uri:
+            candidate_url = explicit_issuer or auth_endpoint or token_endpoint or userinfo_endpoint
+            if candidate_url:
+                try:
+                    from fayda_mcp.oidc.discovery import discover_oidc_configuration
+                    discovered = discover_oidc_configuration(candidate_url, timeout=2.5)
+                except Exception:
+                    discovered = None
+
+        issuer = explicit_issuer or (discovered.get("issuer", "") if discovered else "")
+        jwks_uri = explicit_jwks_uri or (discovered.get("jwks_uri", "") if discovered else "")
+
+        if not auth_endpoint and discovered:
+            auth_endpoint = discovered.get("authorization_endpoint", "")
+        if not token_endpoint and discovered:
+            token_endpoint = discovered.get("token_endpoint", "")
+        if not userinfo_endpoint and discovered:
+            userinfo_endpoint = discovered.get("userinfo_endpoint", "")
+
+        # Safe fallback if discovery unavailable or offline
+        if not issuer and (auth_endpoint or token_endpoint):
             from urllib.parse import urlparse
-            parsed = urlparse(auth_endpoint)
-            issuer = f"{parsed.scheme}://{parsed.netloc}"
+            parsed = urlparse(auth_endpoint or token_endpoint)
+            if parsed.scheme and parsed.netloc:
+                issuer = f"{parsed.scheme}://{parsed.netloc}"
 
-        # Derive jwks_uri if not explicit
-        jwks_uri = get_val(f"{env_prefix}JWKS_URL", f"{env_prefix}JWKS_URI", "JWKS_URL", "JWKS_URI")
-        if not jwks_uri and token_endpoint:
-            if "/token" in token_endpoint:
+        if not jwks_uri:
+            if issuer:
+                jwks_uri = f"{issuer}/.well-known/jwks.json"
+            elif token_endpoint and "/token" in token_endpoint:
                 jwks_uri = token_endpoint.replace("/token", "/jwks")
-            elif issuer:
-                jwks_uri = f"{issuer}/v1/esignet/oauth/v2/jwks"
 
-        # Resolve private key
+        # 2. Resolve private key from base64 RSA JWK, raw JWK, PEM, or file path
         raw_key = get_val(
             f"{env_prefix}PRIVATE_KEY",
             f"{env_prefix}SIGNING_KEY",
@@ -166,21 +245,43 @@ class FaydaConfig(BaseModel):
                 signing_key = pem
                 if parsed_kid and not key_id:
                     key_id = parsed_kid
+                # If raw_key was an existing file path, keep signing_key_path
+                if not signing_key_path and isinstance(raw_key, str) and os.path.isfile(raw_key):
+                    signing_key_path = raw_key
             except Exception:
                 signing_key = raw_key
-        elif signing_key_path and os.path.exists(signing_key_path):
-            with open(signing_key_path, "r", encoding="utf-8") as f:
-                content = f.read().strip()
+        elif signing_key_path:
             from fayda_mcp.secrets.keys import parse_private_key
-            pem, parsed_kid = parse_private_key(content)
-            signing_key = pem
-            if parsed_kid and not key_id:
-                key_id = parsed_kid
+            try:
+                pem, parsed_kid = parse_private_key(signing_key_path)
+                signing_key = pem
+                if parsed_kid and not key_id:
+                    key_id = parsed_kid
+            except Exception:
+                pass
 
-        exp_time = get_val(f"{env_prefix}EXPIRATION_TIME", "EXPIRATION_TIME", default="")
-        ttl_seconds = int(exp_time) if exp_time and exp_time.isdigit() else 120
-
+        # 3. Support ALGORITHM and EXPIRATION_TIME with unit confirmation
         algorithm = get_val(f"{env_prefix}ALGORITHM", "ALGORITHM", default="RS256")
+        client_assertion_type = get_val(
+            f"{env_prefix}CLIENT_ASSERTION_TYPE",
+            "CLIENT_ASSERTION_TYPE",
+            default="urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        )
+
+        exp_time_val = get_val(f"{env_prefix}EXPIRATION_TIME", "EXPIRATION_TIME", default="")
+        exp_unit_hint = get_val(
+            f"{env_prefix}EXPIRATION_UNIT",
+            f"{env_prefix}EXPIRATION_TIME_UNIT",
+            "EXPIRATION_UNIT",
+            "EXPIRATION_TIME_UNIT",
+            default="",
+        ) or None
+
+        ttl_seconds = parse_expiration_time(exp_time_val, unit_hint=exp_unit_hint, default_seconds=120)
+
+        allowed_algs = [algorithm]
+        if "RS256" not in allowed_algs:
+            allowed_algs.append("RS256")
 
         return cls(
             client_id=client_id,
@@ -193,7 +294,9 @@ class FaydaConfig(BaseModel):
             signing_key_path=signing_key_path,
             signing_key=signing_key,
             key_id=key_id,
-            allowed_algorithms=[algorithm],
+            algorithm=algorithm,
+            client_assertion_type=client_assertion_type,
+            allowed_algorithms=allowed_algs,
             client_assertion_ttl_seconds=ttl_seconds,
             session_ttl_seconds=int(get_val(f"{env_prefix}SESSION_TTL_SECONDS", "SESSION_TTL_SECONDS", default="600")),
             result_ttl_seconds=int(get_val(f"{env_prefix}RESULT_TTL_SECONDS", "RESULT_TTL_SECONDS", default="900")),

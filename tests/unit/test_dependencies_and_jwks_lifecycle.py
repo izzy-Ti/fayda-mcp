@@ -75,6 +75,16 @@ class TestExplicitDotenvAndDependencies:
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+            for k in (
+                "FAYDA_CLIENT_ID",
+                "FAYDA_REDIRECT_URI",
+                "FAYDA_ISSUER",
+                "FAYDA_AUTHORIZATION_ENDPOINT",
+                "FAYDA_TOKEN_ENDPOINT",
+                "FAYDA_USERINFO_ENDPOINT",
+                "FAYDA_JWKS_URI",
+            ):
+                os.environ.pop(k, None)
 
     def test_configuration_output_redacts_all_secrets(self) -> None:
         """Acceptance requirement: Configuration output redacts all secrets."""

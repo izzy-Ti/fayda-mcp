@@ -39,7 +39,11 @@ class FaydaHttpClient:
             "code": code,
             "redirect_uri": self.config.redirect_uri,
             "code_verifier": code_verifier,
-            "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            "client_assertion_type": getattr(
+                self.config,
+                "client_assertion_type",
+                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            ),
             "client_assertion": client_assertion,
         }
 

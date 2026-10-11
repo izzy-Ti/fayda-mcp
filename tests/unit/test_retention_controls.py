@@ -315,13 +315,13 @@ def test_tls_enforced_for_remote_neon_connections():
     repo = PostgresResultRepository.from_url(neon_url)
     assert repo._engine is not None
     engine_url_str = str(repo._engine.url)
-    assert "sslmode=require" in engine_url_str
+    assert "sslmode=require" in engine_url_str or "ssl=require" in engine_url_str
 
     # Runner also enforces sslmode
     runner = MigrationRunner(neon_url)
     assert runner._engine is not None
     runner_url_str = str(runner._engine.url)
-    assert "sslmode=require" in runner_url_str
+    assert "sslmode=require" in runner_url_str or "ssl=require" in runner_url_str
 
 
 def test_small_process_pool_defaults_configured():

@@ -3,6 +3,7 @@
 import asyncio
 import datetime
 import json
+import sys
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -122,19 +123,69 @@ class PostgresResultRepository:
             raise ImportError(
                 "Postgres extra is not installed. Install with: pip install 'fayda-mcp[postgres]'"
             )
-        # Ensure async driver URL format
-        if database_url.startswith("postgresql://"):
-            database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
-        elif database_url.startswith("postgres://"):
-            database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+        is_postgres = (
+            database_url.startswith("postgresql")
+            or database_url.startswith("postgres://")
+            or "neon.tech" in database_url
+        )
 
-        # Enforce TLS for remote connections if not explicitly specified
-        is_remote_postgres = (
-            "postgresql" in database_url or "neon.tech" in database_url
-        ) and "localhost" not in database_url and "127.0.0.1" not in database_url
-        if is_remote_postgres and "sslmode=" not in database_url and "ssl=" not in database_url:
-            sep = "&" if "?" in database_url else "?"
-            database_url = f"{database_url}{sep}sslmode=require"
+        if is_postgres:
+            # Check if asyncpg is available or requested
+            has_asyncpg = False
+            try:
+                import asyncpg  # type: ignore
+                has_asyncpg = True
+            except ImportError:
+                pass
+
+            # On Windows or when asyncpg is installed / requested, prefer asyncpg to ensure
+            # full compatibility with asyncio ProactorEventLoop (required for stdio pipes).
+            use_asyncpg = has_asyncpg and (
+                "asyncpg" in database_url
+                or sys.platform == "win32"
+                or "psycopg" not in database_url
+            )
+
+            is_remote_postgres = (
+                "neon.tech" in database_url or "postgresql" in database_url
+            ) and "localhost" not in database_url and "127.0.0.1" not in database_url
+
+            if use_asyncpg:
+                if database_url.startswith("postgresql+psycopg://"):
+                    database_url = database_url.replace("postgresql+psycopg://", "postgresql+asyncpg://", 1)
+                elif database_url.startswith("postgresql://"):
+                    database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+                elif database_url.startswith("postgres://"):
+                    database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
+
+                # asyncpg requires ssl= instead of sslmode=, and does not accept channel_binding
+                from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+                parsed = urlparse(database_url)
+                qs = parse_qs(parsed.query)
+                if "sslmode" in qs:
+                    mode = qs.pop("sslmode")[0]
+                    qs["ssl"] = [mode]
+                elif is_remote_postgres and "ssl" not in qs:
+                    qs["ssl"] = ["require"]
+                qs.pop("channel_binding", None)
+                database_url = urlunparse((
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    parsed.params,
+                    urlencode(qs, doseq=True),
+                    parsed.fragment,
+                ))
+            else:
+                if database_url.startswith("postgresql://"):
+                    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+                elif database_url.startswith("postgres://"):
+                    database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+
+                if is_remote_postgres and "sslmode=" not in database_url and "ssl=" not in database_url:
+                    sep = "&" if "?" in database_url else "?"
+                    database_url = f"{database_url}{sep}sslmode=require"
 
         # Tuned small process pool defaults for pooled Neon / PgBouncer
         configured_kwargs: Dict[str, Any] = {}

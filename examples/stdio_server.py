@@ -25,14 +25,6 @@ import asyncio
 import os
 import sys
 
-if sys.platform == "win32":
-    try:
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    except Exception:
-        pass
 
 from fayda_mcp import FaydaConfig, FaydaVerificationService
 from fayda_mcp.mcp.factory import create_mcp_server

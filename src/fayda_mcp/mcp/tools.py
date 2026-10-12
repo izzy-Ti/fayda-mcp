@@ -1,12 +1,17 @@
 """Thin typed FastMCP tool handlers."""
 
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from fayda_mcp.context import (
     CallerAuthorizationAdapter,
     CallerContext,
     SimpleCallerAdapter,
 )
 from fayda_mcp.exceptions import AuthorizationError, VerificationNotFoundError
+from fayda_mcp.mcp.resources import (
+    build_health_data,
+    build_policy_checks_data,
+    build_policy_purposes_data,
+)
 from fayda_mcp.qr.schemas import (
     QRAgentVerificationResult,
     QRVerificationResult,
@@ -195,3 +200,44 @@ def register_tools(
         if isinstance(result, QRAgentVerificationResult):
             return result
         return filter_agent_output(result)
+
+    @server.tool()
+    async def list_allowed_checks() -> Dict[str, Any]:
+        """Return checks permitted by verification policy.
+
+        Exposes supported checks, descriptions, required claims, required scopes,
+        default requirement (required vs optional), and custom age threshold ranges.
+        """
+        ctx = await adapter.resolve_context("list_allowed_checks")
+        allowed = await adapter.authorize(ctx, "verification:read", None)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:read'")
+
+        return build_policy_checks_data(service.policy)
+
+    @server.tool()
+    async def list_verification_purposes() -> Dict[str, Any]:
+        """Return approved business verification purposes and their constraints.
+
+        Exposes allowed purposes (e.g. onboarding, kyc) and permissible age threshold ranges.
+        """
+        ctx = await adapter.resolve_context("list_verification_purposes")
+        allowed = await adapter.authorize(ctx, "verification:read", None)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:read'")
+
+        return build_policy_purposes_data(service.policy)
+
+    @server.tool()
+    async def check_service_health() -> Dict[str, Any]:
+        """Return sanitized readiness state of Fayda MCP.
+
+        Evaluates overall status (ready/configured/degraded), storage backends, and key configuration
+        without exposing secrets, making outbound network calls, or performing migrations.
+        """
+        ctx = await adapter.resolve_context("check_service_health")
+        allowed = await adapter.authorize(ctx, "verification:read", None)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:read'")
+
+        return build_health_data(service)

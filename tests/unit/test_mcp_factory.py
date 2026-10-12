@@ -62,6 +62,9 @@ class TestMcpFactoryAndTools:
                 "get_verification_status",
                 "get_verification_result",
                 "cancel_verification",
+                "list_allowed_checks",
+                "list_verification_purposes",
+                "check_service_health",
             }.issubset(tool_names)
 
     async def test_real_mcp_client_start_status_result_flow(
@@ -315,3 +318,44 @@ class TestCallerIsolationAndHostAdapter:
             with pytest.raises(ToolError) as exc_info:
                 await client.call_tool("cancel_verification", {"request_id": request_id})
             assert "denied" in str(exc_info.value).lower()
+
+    async def test_list_allowed_checks_tool(
+        self, verification_service: FaydaVerificationService
+    ) -> None:
+        """Verify list_allowed_checks tool returns permitted policy checks metadata."""
+        server = create_mcp_server(service=verification_service)
+        async with Client(server) as client:
+            res = await client.call_tool("list_allowed_checks", {})
+            assert res.is_error is False
+            data = res.data if isinstance(res.data, dict) else res.data.model_dump()
+            assert "checks" in data
+            assert "policy_version" in data
+            check_names = [c["name"] for c in data["checks"]]
+            assert "identity_verified" in check_names
+            assert "age_over_18" in check_names
+
+    async def test_list_verification_purposes_tool(
+        self, verification_service: FaydaVerificationService
+    ) -> None:
+        """Verify list_verification_purposes tool returns approved purposes."""
+        server = create_mcp_server(service=verification_service)
+        async with Client(server) as client:
+            res = await client.call_tool("list_verification_purposes", {})
+            assert res.is_error is False
+            data = res.data if isinstance(res.data, dict) else res.data.model_dump()
+            assert "allowed_purposes" in data
+            assert "onboarding" in data["allowed_purposes"]
+
+    async def test_check_service_health_tool(
+        self, verification_service: FaydaVerificationService
+    ) -> None:
+        """Verify check_service_health tool returns sanitized readiness state."""
+        server = create_mcp_server(service=verification_service)
+        async with Client(server) as client:
+            res = await client.call_tool("check_service_health", {})
+            assert res.is_error is False
+            data = res.data if isinstance(res.data, dict) else res.data.model_dump()
+            assert "status" in data
+            assert "readiness" in data
+            assert data["status"] in ("ready", "configured", "degraded")
+            assert "disclaimer" in data

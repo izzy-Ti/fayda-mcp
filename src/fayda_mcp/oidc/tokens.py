@@ -114,22 +114,31 @@ def validate_userinfo_response(
                 raise TokenValidationError(
                     f"UserInfo algorithm '{alg}' is not in allowed algorithms: {config.allowed_algorithms}"
                 )
-            valid_issuers = list({
+            valid_issuers = {
                 config.issuer,
                 config.issuer.rstrip("/"),
                 f"{config.issuer.rstrip('/')}/",
                 f"{config.issuer.rstrip('/')}/v1/esignet",
                 f"{config.issuer.rstrip('/')}/v1/esignet/",
-            })
+            }
             claims = jwt.decode(
                 userinfo,
                 signing_key,
                 algorithms=config.allowed_algorithms,
-                audience=config.client_id,
-                issuer=valid_issuers,
                 leeway=config.jwt_clock_skew_seconds,
-                options={"verify_signature": True, "require": ["sub"]},
+                options={
+                    "verify_signature": True,
+                    "verify_aud": False,
+                    "verify_iss": False,
+                    "require": ["sub"],
+                },
             )
+            token_iss = claims.get("iss")
+            if token_iss and token_iss not in valid_issuers:
+                raise TokenValidationError(f"Invalid UserInfo issuer '{token_iss}'")
+            token_aud = claims.get("aud")
+            if token_aud and token_aud != config.client_id and config.client_id not in token_aud:
+                raise TokenValidationError(f"Invalid UserInfo audience '{token_aud}'")
         except TokenValidationError:
             raise
         except Exception as exc:

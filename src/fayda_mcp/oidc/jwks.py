@@ -20,6 +20,9 @@ class JwksCache:
     def add_key(self, kid: str, key: Any) -> None:
         """Manually register a trusted public key (for tests or local configurations)."""
         self._keys[kid] = key
+        # Treat manually supplied keys as freshly loaded so the configured TTL
+        # still applies without forcing a network fetch on the next lookup.
+        self._last_fetched = time.time()
 
     async def fetch_jwks(self, client: httpx.AsyncClient) -> None:
         """Fetch provider JWKS over HTTPS with bounded timeout."""
@@ -54,11 +57,16 @@ class JwksCache:
 
         kid = header.get("kid")
 
-        # Check existing cached keys
-        if kid and kid in self._keys:
-            return self._keys[kid]
-        if not kid and "_default" in self._keys:
-            return self._keys["_default"]
+        # Check existing cached keys if within configured TTL
+        if bool(self._keys) and (time.time() - self._last_fetched) < self.config.jwks_cache_ttl_seconds:
+            if kid and kid in self._keys:
+                return self._keys[kid]
+            if not kid and "_default" in self._keys:
+                return self._keys["_default"]
+            if not kid and len(self._keys) == 1:
+                return next(iter(self._keys.values()))
+        else:
+            self._keys.clear()
 
         # Cache miss or expired: fetch JWKS with single bounded refresh
         await self.fetch_jwks(client)

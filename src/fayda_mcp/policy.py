@@ -1,65 +1,203 @@
-"""Verification policy and permitted purposes/claims validation."""
+"""Verification policy and permitted purposes/claims validation backed by shared PredicateRegistry."""
 
-from typing import Any, Dict, List, Set, Tuple
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fayda_mcp.exceptions import PolicyViolationError
+from fayda_mcp.predicates import (
+    DEFAULT_PREDICATE_REGISTRY,
+    AgeThresholdRule,
+    PredicateRegistry,
+    parse_age_check,
+)
 
+# Backward compatibility mappings dynamically generated from shared predicate registry
 CHECK_SCOPE_MAPPING: Dict[str, List[str]] = {
-    "identity_verified": ["openid"],
-    "age_over_18": ["openid", "profile"],
+    name: pred.required_scopes for name, pred in DEFAULT_PREDICATE_REGISTRY.all_predicates().items()
 }
 
 CHECK_CLAIM_MAPPING: Dict[str, List[str]] = {
-    "identity_verified": ["sub"],
-    "age_over_18": ["birthdate"],
+    name: pred.required_claims for name, pred in DEFAULT_PREDICATE_REGISTRY.all_predicates().items()
 }
 
 
 class VerificationPolicy(BaseModel):
-    """Enforces allowed purposes, checks, and claim scopes."""
+    """Enforces allowed purposes, checks, and claim scopes backed by shared predicate registry."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     allowed_purposes: List[str] = Field(
         default_factory=lambda: ["onboarding", "kyc", "account_opening", "age_verification"],
         description="List of permitted business purposes",
     )
     allowed_checks: List[str] = Field(
-        default_factory=lambda: ["identity_verified", "age_over_18"],
+        default_factory=lambda: DEFAULT_PREDICATE_REGISTRY.supported_checks(),
         description="List of permitted checks",
     )
+    registry: Optional[PredicateRegistry] = Field(
+        default=None,
+        description="Predicate registry instance (defaults to shared DEFAULT_PREDICATE_REGISTRY)",
+    )
     version: str = Field(default="v1", description="Policy version identifier")
+    evaluation_timezone: str = Field(
+        default="Africa/Addis_Ababa",
+        description="Host timezone for evaluation dates (default: Africa/Addis_Ababa)",
+    )
+    february_29_anniversary: str = Field(
+        default="march_1",
+        description="Anniversary rule for Feb 29 birthdates in common years ('march_1' or 'february_28')",
+    )
+    # Host-approved age threshold bounds
+    min_age_threshold: int = Field(default=1, description="Host-approved minimum age threshold")
+    max_age_threshold: int = Field(default=120, description="Host-approved maximum age threshold")
+    purpose_age_thresholds: Dict[str, Union[Tuple[int, int], List[int]]] = Field(
+        default_factory=dict,
+        description="Per-purpose allowed age thresholds (range tuple or explicit list)",
+    )
+    # Required vs optional checks specification (P4)
+    optional_checks: List[str] = Field(
+        default_factory=list,
+        description="List of checks considered optional by default in this policy",
+    )
+    required_checks: Optional[List[str]] = Field(
+        default=None,
+        description="Explicit list of required checks; if None, all requested checks not in optional_checks are required",
+    )
 
-    def validate_request(self, purpose: str, checks: List[str]) -> None:
-        """Validate requested purpose and checks against policy before redirect.
+    @model_validator(mode="after")
+    def populate_purpose_allowlist(self) -> "VerificationPolicy":
+        """Ensure purposes configured with age thresholds are admitted to allowed_purposes."""
+        if self.purpose_age_thresholds:
+            for p in self.purpose_age_thresholds.keys():
+                if p not in self.allowed_purposes:
+                    self.allowed_purposes.append(p)
+        return self
 
-        Raises PolicyViolationError on any unsupported or empty purpose/check.
-        """
+    def get_registry(self) -> PredicateRegistry:
+        """Return the active predicate registry."""
+        return self.registry or DEFAULT_PREDICATE_REGISTRY
+
+    def partition_required_and_optional(
+        self,
+        resolved_checks: Sequence[str],
+        request_optional: Optional[Sequence[str]] = None,
+    ) -> Tuple[List[str], List[str]]:
+        """Partition resolved checks into (required_checks, optional_checks)."""
+        opt_set = set(self.optional_checks)
+        if request_optional:
+            opt_set.update(request_optional)
+
+        if self.required_checks is not None:
+            req_list = [c for c in resolved_checks if c in self.required_checks]
+            opt_list = [c for c in resolved_checks if c not in req_list]
+            return req_list, opt_list
+
+        req_list = [c for c in resolved_checks if c not in opt_set]
+        opt_list = [c for c in resolved_checks if c in opt_set]
+        return req_list, opt_list
+
+    def validate_purpose(self, purpose: str) -> None:
+        """Validate that the requested purpose is allowed by policy."""
         if not purpose or not purpose.strip():
             raise PolicyViolationError("Verification purpose must not be empty")
-
         if purpose not in self.allowed_purposes:
             raise PolicyViolationError(
                 f"Unsupported purpose: '{purpose}'. Permitted purposes: {self.allowed_purposes}"
             )
 
+    def validate_checks(
+        self,
+        checks: Sequence[Union[str, AgeThresholdRule]],
+        purpose: Optional[str] = None,
+    ) -> List[str]:
+        """Validate that requested checks are allowed by policy."""
         if not checks:
             raise PolicyViolationError("At least one verification check must be requested")
 
-        for check in checks:
-            if check not in self.allowed_checks:
+        reg = self.get_registry()
+        resolved_checks: List[str] = []
+
+        for raw_check in checks:
+            check_str = (
+                raw_check.check_name
+                if isinstance(raw_check, AgeThresholdRule)
+                else str(raw_check)
+            )
+
+            # Check if this is an age predicate
+            parsed_age = parse_age_check(
+                check_str,
+                min_age=self.min_age_threshold,
+                max_age=self.max_age_threshold,
+            )
+
+            if parsed_age is not None:
+                # If host policy restricted allowed_checks and no age checks are permitted
+                if not any(parse_age_check(c) is not None for c in self.allowed_checks):
+                    raise PolicyViolationError(
+                        f"Unsupported check: '{check_str}'. Permitted checks: {self.allowed_checks}"
+                    )
+
+                threshold = int(parsed_age.parameters["threshold"])
+
+                # Enforce per-purpose permitted age thresholds
+                if (
+                    purpose
+                    and self.purpose_age_thresholds
+                    and purpose in self.purpose_age_thresholds
+                ):
+                    allowed = self.purpose_age_thresholds[purpose]
+                    if isinstance(allowed, tuple) and len(allowed) == 2:
+                        p_min, p_max = allowed
+                        if not (p_min <= threshold <= p_max):
+                            raise PolicyViolationError(
+                                f"Age threshold {threshold} is outside permitted range ({p_min}-{p_max}) for purpose '{purpose}'"
+                            )
+                    elif isinstance(allowed, (list, set)):
+                        if threshold not in allowed:
+                            raise PolicyViolationError(
+                                f"Age threshold {threshold} is not permitted for purpose '{purpose}'. Permitted thresholds: {list(allowed)}"
+                            )
+
+                # Ensure dynamic registration in the active registry
+                reg.ensure_age_predicate(check_str, threshold)
+                resolved_checks.append(check_str)
+                continue
+
+            # Non-age predicate check
+            if check_str not in self.allowed_checks:
                 raise PolicyViolationError(
-                    f"Unsupported check: '{check}'. Permitted checks: {self.allowed_checks}"
+                    f"Unsupported check: '{check_str}'. Permitted checks: {self.allowed_checks}"
                 )
+            if not reg.is_supported(check_str):
+                raise PolicyViolationError(
+                    f"Unsupported check: '{check_str}'. Not registered in predicate registry"
+                )
+            resolved_checks.append(check_str)
 
-    def resolve_scopes_and_claims(self, checks: List[str]) -> Tuple[List[str], Dict[str, Any]]:
-        """Resolve minimal OIDC scopes and essential claims needed for the requested checks."""
-        scopes: Set[str] = {"openid"}
-        userinfo_claims: Dict[str, Any] = {}
+        return resolved_checks
 
-        for check in checks:
-            for s in CHECK_SCOPE_MAPPING.get(check, []):
-                scopes.add(s)
-            for claim_name in CHECK_CLAIM_MAPPING.get(check, []):
-                userinfo_claims[claim_name] = {"essential": True}
+    def validate_request(
+        self,
+        purpose: str,
+        checks: Sequence[Union[str, AgeThresholdRule]],
+    ) -> List[str]:
+        """Validate requested purpose and checks against policy before state creation or redirect.
 
-        claims_param = {"userinfo": userinfo_claims} if userinfo_claims else {}
-        return sorted(list(scopes)), claims_param
+        Rejects negative, decimal, malformed, enormous, and disallowed thresholds.
+        Ensures policy acceptance and evaluation cannot diverge.
+        Returns list of resolved canonical check names.
+        """
+        self.validate_purpose(purpose)
+        return self.validate_checks(checks, purpose=purpose)
+
+    def resolve_scopes_and_claims(
+        self, checks: Sequence[Union[str, AgeThresholdRule]]
+    ) -> Tuple[List[str], Dict[str, Any]]:
+        """Resolve minimal OIDC scopes and essential claims needed for the requested checks using registry."""
+        resolved: List[str] = [
+            c.check_name if isinstance(c, AgeThresholdRule) else str(c) for c in checks
+        ]
+        reg = self.get_registry()
+        return reg.resolve_scopes_and_claims(resolved)
+
+

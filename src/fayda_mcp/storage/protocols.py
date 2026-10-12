@@ -1,6 +1,6 @@
 """Storage protocols for OIDC sessions, verification requests, and results."""
 
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 from fayda_mcp.schemas import VerificationResult
 
 
@@ -28,6 +28,10 @@ class SessionStore(Protocol):
         """Explicitly delete a session. Returns True if deleted."""
         ...
 
+    async def close(self) -> None:
+        """Close underlying connection pools and resources."""
+        ...
+
 
 @runtime_checkable
 class ResultRepository(Protocol):
@@ -35,6 +39,16 @@ class ResultRepository(Protocol):
 
     async def save_request(self, request_id: str, data: Dict[str, Any], ttl_seconds: int) -> None:
         """Create or update verification request record."""
+        ...
+
+    async def reserve_request(
+        self, request_id: str, data: Dict[str, Any], ttl_seconds: int
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Atomically reserve a request using unique insert.
+
+        Returns (True, data) if successfully reserved.
+        Returns (False, existing_record) if a request with the same idempotency key already exists.
+        """
         ...
 
     async def get_request(self, request_id: str) -> Optional[Dict[str, Any]]:
@@ -52,7 +66,11 @@ class ResultRepository(Protocol):
         ...
 
     async def finalize_result(
-        self, request_id: str, result: VerificationResult, ttl_seconds: int
+        self,
+        request_id: str,
+        result: Union[VerificationResult, Any],
+        ttl_seconds: int,
+        audit_event: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Atomically finalize verification outcome.
 
@@ -62,12 +80,20 @@ class ResultRepository(Protocol):
         """
         ...
 
-    async def save_result(self, request_id: str, result: VerificationResult, ttl_seconds: int) -> None:
+    async def save_result(self, request_id: str, result: Union[VerificationResult, Any], ttl_seconds: int) -> None:
         """Store final evaluated verification result."""
         ...
 
     async def get_result(self, request_id: str) -> Optional[VerificationResult]:
         """Retrieve final evaluated verification result."""
+        ...
+
+    async def cleanup(self) -> int:
+        """Purge expired requests and results according to retention timestamps. Returns count of purged records."""
+        ...
+
+    async def close(self) -> None:
+        """Close underlying connection pools and resources."""
         ...
 
 

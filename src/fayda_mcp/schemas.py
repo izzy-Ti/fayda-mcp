@@ -11,9 +11,10 @@ VerificationStatusType = Literal[
     "failed",
     "expired",
     "cancelled",
+    "incomplete",
 ]
 
-CheckOutcomeType = Union[bool, Literal["unavailable"]]
+CheckOutcomeType = Union[bool, Literal["unavailable"], None]
 
 
 class StartVerificationRequest(BaseModel):
@@ -23,6 +24,10 @@ class StartVerificationRequest(BaseModel):
 
     purpose: str = Field(..., description="Business purpose (e.g., 'onboarding', 'kyc')")
     checks: List[str] = Field(..., description="Requested checks (e.g., ['identity_verified', 'age_over_18'])")
+    optional_checks: Optional[List[str]] = Field(
+        default=None,
+        description="Optional checks that do not block policy completion if unavailable",
+    )
     application_user_ref: str = Field(..., description="Opaque application user reference")
     idempotency_key: str = Field(..., description="Unique caller idempotency key")
 
@@ -55,10 +60,17 @@ class VerificationResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: str = Field(..., description="Verification request identifier")
-    status: str = Field(..., description="Final outcome status ('verified', 'rejected', etc.)")
+    status: str = Field(
+        ...,
+        description="Final outcome status ('verified', 'rejected', 'incomplete', 'failed', etc.)",
+    )
     checks: Dict[str, CheckOutcomeType] = Field(
         default_factory=dict,
-        description="Outcomes of evaluated checks: True, False, or 'unavailable'",
+        description="Outcomes of evaluated checks: True, False, or null/'unavailable'",
+    )
+    reasons: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Safe reason codes for unavailable checks (e.g. {'phone_verified': 'provider_claim_unavailable'})",
     )
     verified_at: Optional[str] = Field(default=None, description="ISO 8601 timestamp when verification completed")
     expires_at: Optional[str] = Field(default=None, description="ISO 8601 timestamp when result expires")
@@ -73,3 +85,4 @@ class CancelVerificationResponse(BaseModel):
 
     request_id: str = Field(..., description="Verification request identifier")
     status: Literal["cancelled"] = Field(default="cancelled")
+

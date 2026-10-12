@@ -44,13 +44,21 @@ def validate_id_token(
             f"Algorithm '{alg}' is not in allowed algorithms: {config.allowed_algorithms}"
         )
 
+    valid_issuers = list({
+        config.issuer,
+        config.issuer.rstrip("/"),
+        f"{config.issuer.rstrip('/')}/",
+        f"{config.issuer.rstrip('/')}/v1/esignet",
+        f"{config.issuer.rstrip('/')}/v1/esignet/",
+    })
+
     try:
         claims = jwt.decode(
             token_str,
             signing_key,
             algorithms=config.allowed_algorithms,
             audience=config.client_id,
-            issuer=config.issuer,
+            issuer=valid_issuers,
             leeway=config.jwt_clock_skew_seconds,
             options={
                 "verify_signature": True,
@@ -98,15 +106,41 @@ def validate_userinfo_response(
         if signing_key is None:
             raise TokenValidationError("Signing key required for signed UserInfo response")
         try:
+            header = jwt.get_unverified_header(userinfo)
+            alg = header.get("alg")
+            if not alg or alg.lower() == "none":
+                raise TokenValidationError("Unsigned UserInfo JWT (alg=none) is strictly prohibited")
+            if alg not in config.allowed_algorithms:
+                raise TokenValidationError(
+                    f"UserInfo algorithm '{alg}' is not in allowed algorithms: {config.allowed_algorithms}"
+                )
+            valid_issuers = {
+                config.issuer,
+                config.issuer.rstrip("/"),
+                f"{config.issuer.rstrip('/')}/",
+                f"{config.issuer.rstrip('/')}/v1/esignet",
+                f"{config.issuer.rstrip('/')}/v1/esignet/",
+            }
             claims = jwt.decode(
                 userinfo,
                 signing_key,
                 algorithms=config.allowed_algorithms,
-                audience=config.client_id,
-                issuer=config.issuer,
                 leeway=config.jwt_clock_skew_seconds,
-                options={"verify_signature": True, "require": ["sub"]},
+                options={
+                    "verify_signature": True,
+                    "verify_aud": False,
+                    "verify_iss": False,
+                    "require": ["sub"],
+                },
             )
+            token_iss = claims.get("iss")
+            if token_iss and token_iss not in valid_issuers:
+                raise TokenValidationError(f"Invalid UserInfo issuer '{token_iss}'")
+            token_aud = claims.get("aud")
+            if token_aud and token_aud != config.client_id and config.client_id not in token_aud:
+                raise TokenValidationError(f"Invalid UserInfo audience '{token_aud}'")
+        except TokenValidationError:
+            raise
         except Exception as exc:
             raise TokenValidationError(f"Invalid UserInfo JWT: {exc}") from exc
     elif isinstance(userinfo, dict):

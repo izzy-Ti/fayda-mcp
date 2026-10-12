@@ -33,6 +33,18 @@ class ConfigurationError(FaydaMCPError):
         super().__init__(message=message, code="configuration_error", details=details)
 
 
+class QRVerificationDisabledError(ConfigurationError):
+    """Raised when offline QR verification is invoked while disabled by configuration."""
+
+    def __init__(
+        self,
+        message: str = "Fayda QR verification is disabled by configuration",
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message=message, details=details)
+        self.code = "qr_verification_disabled"
+
+
 class AuthenticationError(FaydaMCPError):
     """Raised when authentication credentials or token validation fails."""
 
@@ -88,3 +100,26 @@ class TokenValidationError(FaydaMCPError):
 
     def __init__(self, message: str = "Token validation failed", details: Optional[Dict[str, Any]] = None):
         super().__init__(message=message, code="token_validation_error", details=details)
+
+
+class IdempotencyConflictError(FaydaMCPError):
+    """Raised when an idempotency key is reused with different request parameters."""
+
+    def __init__(
+        self,
+        message: str = "Idempotency key has already been used with different parameters",
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message=message, code="idempotency_conflict", details=details)
+
+
+class HostSuccessHookError(FaydaMCPError):
+    """Raised when the host application's users-table success hook encounters an unhandled failure."""
+
+    def __init__(
+        self,
+        message: str = "Host users-table success hook failed",
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(message=message, code="host_success_hook_error", details=details)
+

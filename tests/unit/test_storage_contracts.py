@@ -155,12 +155,156 @@ class BaseStorageAdapterContractTests:
         events_all = await logger.get_events()
         assert len(events_all) == 3
 
+    @pytest.mark.asyncio
+    async def test_genuine_not_found_returns_none(self):
+        """Acceptance: No production method silently returns None except a genuine not-found lookup."""
+        repo = await self.create_result_repository()
+        assert await repo.get_request("non_existent_req_id") is None
+        assert await repo.get_result("non_existent_req_id") is None
+        assert await repo.find_by_idempotency_key("tenant_x", "principal_y", "key_z") is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_purges_expired_records(self):
+        """Verify cleanup purges expired requests and results."""
+        repo = await self.create_result_repository()
+        req_id = "vr_cleanup_exp"
+        await repo.save_request(req_id, {"status": "pending"}, ttl_seconds=0)
+        res = VerificationResult(
+            request_id=req_id,
+            status="verified",
+            checks={"identity_verified": True},
+        )
+        await repo.save_result(req_id, res, ttl_seconds=0)
+
+        await asyncio.sleep(0.01)
+        purged = await repo.cleanup()
+        assert purged >= 2
+        assert await repo.get_request(req_id) is None
+        assert await repo.get_result(req_id) is None
+
+    @pytest.mark.asyncio
+    async def test_reserve_request_unique_and_idempotent(self):
+        """Verify reserve_request atomically prevents duplicate reservations for same idempotency key."""
+        repo = await self.create_result_repository()
+        req_id_1 = "vr_res_1"
+        data_1 = {
+            "tenant_id": "tenant-A",
+            "principal_id": "principal-A",
+            "idempotency_key": "idemp-unique-1",
+            "status": "initializing",
+            "request_fingerprint": "fp_hash_1",
+            "auth_url": "https://auth.example/1",
+        }
+
+        # 1. First reservation succeeds
+        reserved_1, rec_1 = await repo.reserve_request(req_id_1, data_1, ttl_seconds=60)
+        assert reserved_1 is True
+        assert rec_1["status"] == "initializing"
+
+        # 2. Second reservation with same idempotency key returns False and existing record
+        req_id_2 = "vr_res_2"
+        data_2 = {
+            "tenant_id": "tenant-A",
+            "principal_id": "principal-A",
+            "idempotency_key": "idemp-unique-1",
+            "status": "initializing",
+            "request_fingerprint": "fp_hash_1",
+            "auth_url": "https://auth.example/2",
+        }
+        reserved_2, rec_2 = await repo.reserve_request(req_id_2, data_2, ttl_seconds=60)
+        assert reserved_2 is False
+        assert rec_2["request_id"] == req_id_1
+
+    @pytest.mark.asyncio
+    async def test_cancelled_or_terminal_cannot_finalize(self):
+        """Acceptance requirement: Cancelled/expired requests cannot finalize verified."""
+        repo = await self.create_result_repository()
+        req_id = "vr_cancel_fin"
+        await repo.save_request(req_id, {"status": "pending", "auth_url": "https://secret/auth"}, ttl_seconds=60)
+
+        # Mark request as cancelled
+        await repo.update_status(req_id, "cancelled")
+
+        # Verify auth_url was purged on cancellation
+        cancelled_req = await repo.get_request(req_id)
+        assert cancelled_req is not None
+        assert cancelled_req["status"] == "cancelled"
+        assert not cancelled_req.get("authorization_url") and not cancelled_req.get("auth_url")
+
+        # Attempt to finalize result on cancelled request fails
+        res = VerificationResult(request_id=req_id, status="verified", checks={"identity_verified": True})
+        success = await repo.finalize_result(req_id, res, ttl_seconds=60)
+        assert success is False
+        assert await repo.get_result(req_id) is None
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_close(self):
+        """Verify repository close cleans up without error."""
+        repo = await self.create_result_repository()
+        await repo.close()
+
 
 class TestMemoryStorageAdapter(BaseStorageAdapterContractTests):
     """Run the storage contract suite against Memory adapters."""
 
     async def create_session_store(self) -> SessionStore:
         return MemorySessionStore()
+
+    async def create_result_repository(self) -> ResultRepository:
+        return MemoryResultRepository()
+
+    async def create_audit_logger(self) -> AuditLogger:
+        return MemoryAuditLogger()
+
+
+class TestPostgresStorageAdapter(BaseStorageAdapterContractTests):
+    """Run the storage contract suite against PostgreSQL / SQL adapters."""
+
+    def setup_method(self) -> None:
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+        from fayda_mcp.storage.postgres import PostgresAuditLogger, PostgresResultRepository
+
+        self.engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        self.factory = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
+        self.repo = PostgresResultRepository(session_factory=self.factory, engine=self.engine)
+        self.audit = PostgresAuditLogger(session_factory=self.factory)
+        self._initialized = False
+
+    async def _ensure_tables(self) -> None:
+        if not self._initialized:
+            await self.repo.create_tables()
+            self._initialized = True
+
+    async def create_session_store(self) -> SessionStore:
+        return MemorySessionStore()
+
+    async def create_result_repository(self) -> ResultRepository:
+        await self._ensure_tables()
+        return self.repo
+
+    async def create_audit_logger(self) -> AuditLogger:
+        await self._ensure_tables()
+        return self.audit
+
+
+class TestRedisStorageAdapter(BaseStorageAdapterContractTests):
+    """Run the storage contract suite against RedisSessionStore."""
+
+    def setup_method(self) -> None:
+        import fakeredis.aioredis as fake_aioredis
+        from fayda_mcp.storage.redis import RedisSessionStore
+
+        self.fake_client = fake_aioredis.FakeRedis(decode_responses=True)
+        self.session_store = RedisSessionStore(self.fake_client)
+
+    async def create_session_store(self) -> SessionStore:
+        await self.fake_client.flushdb()
+        return self.session_store
 
     async def create_result_repository(self) -> ResultRepository:
         return MemoryResultRepository()

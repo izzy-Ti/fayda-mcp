@@ -3,6 +3,8 @@
 from typing import Any, Callable, Optional
 from fastmcp import FastMCP
 from fayda_mcp.context import CallerContext
+from fayda_mcp.mcp.prompts import register_prompts
+from fayda_mcp.mcp.resources import register_resources
 from fayda_mcp.mcp.tools import register_tools
 from fayda_mcp.service import FaydaVerificationService
 
@@ -37,4 +39,14 @@ def create_mcp_server(
         caller_adapter=caller_adapter,
         get_context=get_context,
     )
+    register_prompts(
+        server=server,
+        service=service,
+    )
+    register_resources(
+        server=server,
+        service=service,
+    )
     return server
+
+

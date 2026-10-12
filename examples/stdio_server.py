@@ -21,8 +21,11 @@ Claude Desktop configuration (`claude_desktop_config.json`):
     }
 """
 
+import asyncio
 import os
 import sys
+
+
 from fayda_mcp import FaydaConfig, FaydaVerificationService
 from fayda_mcp.mcp.factory import create_mcp_server
 from fayda_mcp.storage.memory import MemoryResultRepository, MemorySessionStore
@@ -47,11 +50,20 @@ def main() -> None:
             signing_key_path=os.environ.get("FAYDA_SIGNING_KEY_PATH"),
         )
 
-    # 2. Initialize verification service with storage contracts
+    # 2. Initialize verification service with configured storage (Redis/Postgres or memory)
+    from fayda_mcp.cli import init_storage
+
+    storage_mode = os.environ.get("STORAGE_MODE", getattr(config, "storage_mode", "memory"))
+    sessions, results = init_storage(
+        storage_mode=storage_mode,
+        redis_url=os.environ.get("REDIS_URL"),
+        database_url=os.environ.get("DATABASE_URL"),
+    )
+
     service = FaydaVerificationService(
         config=config,
-        sessions=MemorySessionStore(),
-        results=MemoryResultRepository(),
+        sessions=sessions,
+        results=results,
     )
 
     # 3. Create FastMCP server with explicitly registered tools
@@ -63,7 +75,7 @@ def main() -> None:
 
     # 4. Run server over standard I/O transport
     # Note: FastMCP.run() defaults to stdio transport
-    server.run(transport="stdio")
+    server.run(transport="stdio", show_banner=False)
 
 
 if __name__ == "__main__":

@@ -44,13 +44,21 @@ def validate_id_token(
             f"Algorithm '{alg}' is not in allowed algorithms: {config.allowed_algorithms}"
         )
 
+    valid_issuers = list({
+        config.issuer,
+        config.issuer.rstrip("/"),
+        f"{config.issuer.rstrip('/')}/",
+        f"{config.issuer.rstrip('/')}/v1/esignet",
+        f"{config.issuer.rstrip('/')}/v1/esignet/",
+    })
+
     try:
         claims = jwt.decode(
             token_str,
             signing_key,
             algorithms=config.allowed_algorithms,
             audience=config.client_id,
-            issuer=config.issuer,
+            issuer=valid_issuers,
             leeway=config.jwt_clock_skew_seconds,
             options={
                 "verify_signature": True,
@@ -106,12 +114,19 @@ def validate_userinfo_response(
                 raise TokenValidationError(
                     f"UserInfo algorithm '{alg}' is not in allowed algorithms: {config.allowed_algorithms}"
                 )
+            valid_issuers = list({
+                config.issuer,
+                config.issuer.rstrip("/"),
+                f"{config.issuer.rstrip('/')}/",
+                f"{config.issuer.rstrip('/')}/v1/esignet",
+                f"{config.issuer.rstrip('/')}/v1/esignet/",
+            })
             claims = jwt.decode(
                 userinfo,
                 signing_key,
                 algorithms=config.allowed_algorithms,
                 audience=config.client_id,
-                issuer=config.issuer,
+                issuer=valid_issuers,
                 leeway=config.jwt_clock_skew_seconds,
                 options={"verify_signature": True, "require": ["sub"]},
             )

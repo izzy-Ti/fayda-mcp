@@ -14,8 +14,8 @@ This document specifies the Redis connection management, URL parsing rules, sess
 
 ### 1.2 Documented CLI String Support
 `RedisSessionStore.from_url` accepts:
-1. **Bare URLs**: `redis://localhost:6379/0` or `rediss://user:secret@redis.prod:6380/1`
-2. **Quoted URLs**: `'rediss://user:p%40ss@redis.prod:6380/1'`
+1. **Bare URLs**: `redis://localhost:6379/0` or `rediss://username:<password>@redis.example.com:6380/1`
+2. **Quoted URLs**: `'rediss://username:<encoded_password>@redis.example.com:6380/1'`
 3. **CLI Connection Strings**: `redis-cli -u "rediss://host:6379/0"` or `redis-cli --uri "rediss://host:6379/0"`
 
 ### 1.3 Strict Security & Shell Injection Protection

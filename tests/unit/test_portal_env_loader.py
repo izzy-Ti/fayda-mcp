@@ -190,12 +190,12 @@ class TestPrivateKeyDecoding:
             token_endpoint="https://token",
             userinfo_endpoint="https://userinfo",
             jwks_uri="https://jwks",
-            signing_key="SECRET_PRIVATE_KEY_MATERIAL",
+            signing_key="sensitive-test-signing-key",
         )
 
         # repr(config) must not expose signing key
         repr_str = repr(config)
-        assert "SECRET_PRIVATE_KEY_MATERIAL" not in repr_str
+        assert "sensitive-test-signing-key" not in repr_str
 
         # to_redacted_dict() must redact signing key
         redacted = config.to_redacted_dict()
@@ -203,8 +203,8 @@ class TestPrivateKeyDecoding:
 
         # ConfigurationError on invalid key must not reflect raw payload
         with pytest.raises(ConfigurationError) as exc_info:
-            parse_private_key("not-a-valid-base64-or-jwk-SECRETKEY123")
-        assert "SECRETKEY123" not in str(exc_info.value)
+            parse_private_key("invalid-raw-key-input")
+        assert "invalid-raw-key-input" not in str(exc_info.value)
 
 
 class TestExpirationTimeUnits:
@@ -279,8 +279,14 @@ class TestOidcDiscoveryAndOverrides:
         )
 
         # 1. Reject unsigned tokens (alg=none)
+        unsigned_token = (
+            base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode("utf-8").rstrip("=")
+            + "."
+            + base64.urlsafe_b64encode(b'{"sub":"123"}').decode("utf-8").rstrip("=")
+            + "."
+        )
         with pytest.raises(TokenValidationError, match="strictly prohibited"):
-            validate_id_token("eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjMifQ.", config, "dummy_key")
+            validate_id_token(unsigned_token, config, "dummy_key")
 
         # 2. Reject empty token
         with pytest.raises(TokenValidationError, match="non-empty string"):

@@ -70,5 +70,5 @@ For deterministic automated testing and cryptographic validation:
    - Contains 2048-bit RSA detached signature from the National ID issuer.
 2. **Authorized Synthetic Valid Test Fixture**:
    - Located at: [`tests/fixtures/synthetic_authorized_qr_v4.txt`](../tests/fixtures/synthetic_authorized_qr_v4.txt)
-   - Paired with test key pair [`tests/fixtures/test_qr_rsa_public.pem`](../tests/fixtures/test_qr_rsa_public.pem) and [`tests/fixtures/test_qr_rsa_private.pem`](../tests/fixtures/test_qr_rsa_private.pem).
+   - Paired with test public key [`tests/fixtures/test_qr_rsa_public.pem`](../tests/fixtures/test_qr_rsa_public.pem) and ephemeral in-memory test key pairs.
    - Allows reproducible unit and integration tests verifying valid signatures, tamper detection, and wrong-key rejection.

@@ -435,7 +435,7 @@ class PredicateRegistry:
             for claim_name in pred.required_claims:
                 userinfo_claims[claim_name] = {"essential": True}
 
-        claims_param = {"userinfo": userinfo_claims, "id_token": {}} if userinfo_claims else {}
+        claims_param = {"userinfo": userinfo_claims} if userinfo_claims else {}
         return sorted(list(scopes)), claims_param
 
     def evaluate_check(

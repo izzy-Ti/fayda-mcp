@@ -54,18 +54,19 @@ def fixtures_dir() -> str:
 
 
 @pytest.fixture
-def rsa_key_pair(fixtures_dir: str) -> Tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey, str]:
-    """Load test RSA private and public key pair."""
-    with open(os.path.join(fixtures_dir, "test_qr_rsa_private.pem"), "rb") as f:
-        priv_key = serialization.load_pem_private_key(f.read(), password=None)  # type: ignore
-    with open(os.path.join(fixtures_dir, "test_qr_rsa_public.pem"), "rb") as f:
-        pub_pem = f.read().decode("utf-8")
-        pub_key = serialization.load_pem_public_key(pub_pem.encode("utf-8"))  # type: ignore
+def rsa_key_pair() -> Tuple[rsa.RSAPrivateKey, rsa.RSAPublicKey, str]:
+    """Generate in-memory test RSA private and public key pair."""
+    priv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pub_key = priv_key.public_key()
+    pub_pem = pub_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("utf-8")
     return priv_key, pub_key, pub_pem
 
 
 @pytest.fixture
-def trust_store(rsa_key_pair) -> QRTrustStore:
+def trust_store(rsa_key_pair, fixtures_dir: str) -> QRTrustStore:
     _, pub_key, _ = rsa_key_pair
     store = QRTrustStore()
     thumbprint = calculate_key_thumbprint(pub_key)
@@ -73,10 +74,23 @@ def trust_store(rsa_key_pair) -> QRTrustStore:
         TrustedKey(
             public_key=pub_key,
             thumbprint=thumbprint,
-            key_id="test-key-2024",
+            key_id="test-key-ephemeral",
             source="test_fixtures",
         )
     )
+    pub_pem_path = os.path.join(fixtures_dir, "test_qr_rsa_public.pem")
+    if os.path.exists(pub_pem_path):
+        with open(pub_pem_path, "rb") as f:
+            fixture_pub = serialization.load_pem_public_key(f.read())  # type: ignore
+        fixture_thumbprint = calculate_key_thumbprint(fixture_pub)
+        store.add_key(
+            TrustedKey(
+                public_key=fixture_pub,
+                thumbprint=fixture_thumbprint,
+                key_id="test-key-2024",
+                source="test_fixtures",
+            )
+        )
     return store
 
 
@@ -233,8 +247,8 @@ def test_tampering_signature_bytes_fails_verification(rsa_key_pair, trust_store:
     # Flip 1 character in the signature portion after '..'
     parts = valid_qr.split("..")
     sig_part = parts[1]
-    flipped_char = "A" if sig_part[-1] != "A" else "B"
-    tampered_qr = f"{parts[0]}..{sig_part[:-1]}{flipped_char}"
+    flipped_char = "A" if sig_part[0] != "A" else "B"
+    tampered_qr = f"{parts[0]}..{flipped_char}{sig_part[1:]}"
 
     res = decode_and_verify_qr(tampered_qr, trust_store=trust_store)
     assert res.credential_signature_valid is False

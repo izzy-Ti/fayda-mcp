@@ -1,0 +1,77 @@
+# This workflow uploads the fayda-mcp package to PyPI when a GitHub Release is published.
+# It uses PyPI Trusted Publishing (OIDC), eliminating the need for hardcoded API tokens.
+
+name: Upload Python Package
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  release-build:
+    name: Build source distribution and wheel
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tool
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+
+      - name: Build sdist and wheel
+        run: |
+          python -m build
+
+      - name: Verify package version 0.1.1 in dist
+        run: |
+          ls -la dist/
+          # Ensure version 0.1.1 artifacts were produced
+          if ! ls dist/fayda_mcp-0.1.1* 1> /dev/null 2>&1; then
+            echo "Error: Expected dist/fayda_mcp-0.1.1* distributions not found!"
+            exit 1
+          fi
+          echo "Successfully verified 0.1.1 release artifacts."
+
+      - name: Upload distributions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dists
+          path: dist/
+          retention-days: 1
+
+  pypi-publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs:
+      - release-build
+    permissions:
+      # Required permission for PyPI Trusted Publishing via OIDC token exchange
+      id-token: write
+
+    environment:
+      name: pypi
+      url: https://pypi.org/project/fayda-mcp/
+
+    steps:
+      - name: Retrieve release distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dists
+          path: dist/
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          verify-metadata: true

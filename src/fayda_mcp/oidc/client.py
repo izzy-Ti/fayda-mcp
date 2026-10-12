@@ -36,6 +36,7 @@ class FaydaHttpClient:
         """Exchange authorization code for tokens using private_key_jwt client assertion and PKCE verifier."""
         data = {
             "grant_type": "authorization_code",
+            "client_id": self.config.client_id,
             "code": code,
             "redirect_uri": self.config.redirect_uri,
             "code_verifier": code_verifier,

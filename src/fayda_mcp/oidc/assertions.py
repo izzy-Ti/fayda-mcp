@@ -22,13 +22,17 @@ def create_client_assertion(
         key_id: Optional kid header parameter.
     """
     now = int(time.time())
+    ttl = config.client_assertion_ttl_seconds
+    if ttl <= 0 or ttl > 300:
+        ttl = 120
+
     payload = {
         "iss": config.client_id,
         "sub": config.client_id,
         "aud": config.token_endpoint,
         "jti": str(uuid.uuid4()),
         "iat": now,
-        "exp": now + config.client_assertion_ttl_seconds,
+        "exp": now + ttl,
     }
 
     headers: Dict[str, str] = {"alg": algorithm, "typ": "JWT"}

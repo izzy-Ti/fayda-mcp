@@ -83,7 +83,7 @@ class FaydaConfig(BaseModel):
         return data
 
     # Cryptographic & network settings
-    allowed_algorithms: List[str] = Field(default_factory=lambda: ["RS256"])
+    allowed_algorithms: List[str] = Field(default_factory=lambda: ["RS256", "PS256", "ES256"])
     http_timeout_seconds: float = 10.0
     client_assertion_ttl_seconds: int = 120
     session_ttl_seconds: int = 600
@@ -283,9 +283,13 @@ class FaydaConfig(BaseModel):
 
         ttl_seconds = parse_expiration_time(exp_time_val, unit_hint=exp_unit_hint, default_seconds=120)
 
-        allowed_algs = [algorithm]
-        if "RS256" not in allowed_algs:
-            allowed_algs.append("RS256")
+        raw_allowed = get_val(f"{env_prefix}ALLOWED_ALGORITHMS", "ALLOWED_ALGORITHMS", default="")
+        if raw_allowed:
+            allowed_algs = [a.strip() for a in raw_allowed.replace(",", " ").split() if a.strip()]
+        else:
+            allowed_algs = ["RS256", "PS256", "ES256"]
+            if algorithm and algorithm not in allowed_algs:
+                allowed_algs.append(algorithm)
 
         return cls(
             client_id=client_id,

@@ -184,15 +184,40 @@ class RedisSessionStore:
         if "decode_responses" not in redis_kwargs:
             redis_kwargs["decode_responses"] = True
         if "socket_connect_timeout" not in redis_kwargs:
-            redis_kwargs["socket_connect_timeout"] = 15.0
+            redis_kwargs["socket_connect_timeout"] = 20.0
         if "socket_timeout" not in redis_kwargs:
-            redis_kwargs["socket_timeout"] = 15.0
+            redis_kwargs["socket_timeout"] = 20.0
         if "retry_on_timeout" not in redis_kwargs:
             redis_kwargs["retry_on_timeout"] = True
-        client = aioredis.from_url(parsed_url, **redis_kwargs)
+
+        try:
+            pool = aioredis.ConnectionPool.from_url(
+                parsed_url,
+                max_connections=20,
+                health_check_interval=30,
+                **redis_kwargs,
+            )
+            client = aioredis.Redis(connection_pool=pool)
+        except Exception:
+            client = aioredis.from_url(parsed_url, **redis_kwargs)
+
         store = cls(redis_client=client, key_prefix=key_prefix)
         store._owned_client = True
         return store
+
+    async def _retry(self, fn: Any) -> Any:
+        """Retry transient network timeouts or connection drops up to 3 times."""
+        for attempt in range(3):
+            try:
+                res = fn()
+                return await res if asyncio.iscoroutine(res) else res
+            except Exception as e:
+                err_type = type(e).__name__.lower()
+                err_msg = str(e).lower()
+                if ("timeout" in err_type or "connection" in err_type or "timeout" in err_msg) and attempt < 2:
+                    await asyncio.sleep(0.3 * (attempt + 1))
+                    continue
+                raise
 
     def _key(self, state: str) -> str:
         """Derive namespaced Redis key using SHA-256 hash of the random state parameter."""
@@ -206,10 +231,9 @@ class RedisSessionStore:
         key = self._key(state)
         payload = json.dumps(data)
         if ttl_seconds <= 0:
-            # Redis EX requires a positive integer. For zero/negative TTL, set with 1ms expiry.
-            await self.redis.set(key, payload, px=1)
+            await self._retry(lambda: self.redis.set(key, payload, px=1))
         else:
-            await self.redis.set(key, payload, ex=ttl_seconds)
+            await self._retry(lambda: self.redis.set(key, payload, ex=ttl_seconds))
 
     async def consume_session(self, state: str) -> Optional[Dict[str, Any]]:
         """Atomically read and delete session data once.
@@ -220,22 +244,21 @@ class RedisSessionStore:
         Returns None if already consumed, nonexistent, or expired.
         """
         key = self._key(state)
-        val = None
 
-        try:
-            val = await self.redis.getdel(key)
-        except (RedisResponseError, AttributeError):
-            # Fallback for Redis servers < 6.2 lacking native GETDEL
-            val = await self.redis.eval(_GETDEL_LUA, 1, key)
-        except Exception as e:
-            # Check for command unknown error messages
-            err_str = str(e).lower()
-            if "unknown command" in err_str or "getdel" in err_str:
-                val = await self.redis.eval(_GETDEL_LUA, 1, key)
-            else:
+        async def _do_consume():
+            try:
+                return await self.redis.getdel(key)
+            except (RedisResponseError, AttributeError):
+                return await self.redis.eval(_GETDEL_LUA, 1, key)
+            except Exception as e:
+                err_str = str(e).lower()
+                if "unknown command" in err_str or "getdel" in err_str:
+                    return await self.redis.eval(_GETDEL_LUA, 1, key)
                 redacted_k = self._key(state)
                 logger.error("Error executing atomic getdel on Redis key %s: %s", redacted_k, e)
                 raise
+
+        val = await self._retry(_do_consume)
 
         if not val:
             return None
@@ -252,7 +275,7 @@ class RedisSessionStore:
     async def get_session(self, state: str) -> Optional[Dict[str, Any]]:
         """Read session data without consuming (for status inspection)."""
         key = self._key(state)
-        val = await self.redis.get(key)
+        val = await self._retry(lambda: self.redis.get(key))
         if not val:
             return None
 
@@ -271,7 +294,7 @@ class RedisSessionStore:
         Returns True if a session was found and removed, False otherwise.
         """
         key = self._key(state)
-        deleted_count = await self.redis.delete(key)
+        deleted_count = await self._retry(lambda: self.redis.delete(key))
         return bool(deleted_count > 0)
 
     async def close(self) -> None:
@@ -286,6 +309,8 @@ class RedisSessionStore:
                 res = self.redis.close()
                 if asyncio.iscoroutine(res):
                     await res
+
+    aclose = close
 
     async def __aenter__(self) -> "RedisSessionStore":
         return self

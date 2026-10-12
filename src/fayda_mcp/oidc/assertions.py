@@ -23,8 +23,8 @@ def create_client_assertion(
     """
     now = int(time.time())
     ttl = config.client_assertion_ttl_seconds
-    if ttl <= 0 or ttl > 300:
-        ttl = 120
+    if ttl <= 0:
+        ttl = 7200
 
     payload = {
         "iss": config.client_id,

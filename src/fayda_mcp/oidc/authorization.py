@@ -33,16 +33,24 @@ def build_authorization_url(
     code_challenge: str,
     scopes: Optional[List[str]] = None,
     claims: Optional[Dict[str, Any]] = None,
+    acr_values: Optional[str] = None,
+    claims_locales: Optional[str] = None,
+    ui_locales: Optional[str] = None,
+    display: Optional[str] = "page",
 ) -> str:
-    """Construct Fayda eSignet authorization URL with query parameters."""
+    """Construct Fayda eSignet authorization URL with query parameters matching official spec."""
     if scopes is None:
-        scopes = ["openid"]
+        scopes = ["openid", "profile", "email"]
     if "openid" not in scopes:
         scopes = ["openid"] + scopes
 
+    acr_val = acr_values or getattr(config, "acr_values", "mosip:idp:acr:generated-code")
+    c_loc = claims_locales or (config.claims_locales[0] if getattr(config, "claims_locales", None) else "en")
+    u_loc = ui_locales or "en"
+
     params: Dict[str, str] = {
-        "response_type": "code",
         "client_id": config.client_id,
+        "response_type": "code",
         "redirect_uri": config.redirect_uri,
         "scope": " ".join(scopes),
         "state": state,
@@ -51,8 +59,21 @@ def build_authorization_url(
         "code_challenge_method": "S256",
     }
 
+    if acr_val:
+        params["acr_values"] = acr_val
+
     if claims:
-        params["claims"] = json.dumps(claims)
+        claims_copy = dict(claims)
+        if "id_token" not in claims_copy:
+            claims_copy["id_token"] = {}
+        params["claims"] = json.dumps(claims_copy)
+
+    if c_loc:
+        params["claims_locales"] = c_loc
+    if u_loc:
+        params["ui_locales"] = u_loc
+    if display:
+        params["display"] = display
 
     query_str = urlencode(params)
     sep = "&" if "?" in config.authorization_endpoint else "?"

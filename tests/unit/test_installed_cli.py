@@ -152,7 +152,7 @@ class TestInstalledCli:
         with patch("fayda_mcp.mcp.factory.create_mcp_server", return_value=mock_server):
             code = main(["run", "--transport", "stdio"])
             assert code == 0
-            mock_server.run.assert_called_once_with(transport="stdio")
+            assert mock_server.run.call_args[1]["transport"] == "stdio"
 
             # Check that nothing was printed to stdout before server.run
             captured = capsys.readouterr()

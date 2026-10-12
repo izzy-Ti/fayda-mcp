@@ -176,6 +176,10 @@ async def test_authorization_url_scopes_and_claims_binding():
     assert params["client_id"][0] == "test-client-id"
     assert params["redirect_uri"][0] == "https://developer-app.example/auth/fayda/callback"
     assert params["code_challenge_method"][0] == "S256"
+    assert params["acr_values"][0] == "mosip:idp:acr:generated-code"
+    assert params["claims_locales"][0] == "en"
+    assert params["ui_locales"][0] == "en"
+    assert params["display"][0] == "page"
 
     # Scopes
     scopes = set(params["scope"][0].split())
@@ -188,3 +192,4 @@ async def test_authorization_url_scopes_and_claims_binding():
     assert "userinfo" in claims_obj
     assert "birthdate" in claims_obj["userinfo"]
     assert claims_obj["userinfo"]["birthdate"]["essential"] is True
+    assert "id_token" in claims_obj

@@ -70,6 +70,10 @@ class FaydaConfig(BaseModel):
         default="urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
         description="Client assertion type",
     )
+    acr_values: str = Field(
+        default="mosip:idp:acr:generated-code",
+        description="Fayda ACR authentication context class reference",
+    )
 
     def to_redacted_dict(self) -> dict[str, Any]:
         """Return configuration dictionary with all secret material redacted."""
@@ -315,6 +319,7 @@ class FaydaConfig(BaseModel):
             dob_source_calendar=get_val(f"{env_prefix}DOB_SOURCE_CALENDAR", "DOB_SOURCE_CALENDAR", default="gregorian"),
             age_evaluation_timezone=get_val(f"{env_prefix}AGE_EVALUATION_TIMEZONE", "AGE_EVALUATION_TIMEZONE", default="Africa/Addis_Ababa"),
             february_29_anniversary=get_val(f"{env_prefix}FEBRUARY_29_ANNIVERSARY", "FEBRUARY_29_ANNIVERSARY", default="march_1"),
+            acr_values=get_val(f"{env_prefix}ACR_VALUES", "ACR_VALUES", default="mosip:idp:acr:generated-code"),
             claims_locales=[
                 loc.strip() for loc in get_val(f"{env_prefix}CLAIMS_LOCALES", "CLAIMS_LOCALES", default="en am om so ti sid wal").replace(",", " ").split() if loc.strip()
             ],

@@ -33,15 +33,15 @@ jobs:
         run: |
           python -m build
 
-      - name: Verify package version 0.1.1 in dist
+      - name: Verify package version 0.1.2 in dist
         run: |
           ls -la dist/
-          # Ensure version 0.1.1 artifacts were produced
-          if ! ls dist/fayda_mcp-0.1.1* 1> /dev/null 2>&1; then
-            echo "Error: Expected dist/fayda_mcp-0.1.1* distributions not found!"
+          # Ensure version 0.1.2 artifacts were produced
+          if ! ls dist/fayda_mcp-0.1.2* 1> /dev/null 2>&1; then
+            echo "Error: Expected dist/fayda_mcp-0.1.2* distributions not found!"
             exit 1
           fi
-          echo "Successfully verified 0.1.1 release artifacts."
+          echo "Successfully verified 0.1.2 release artifacts."
 
       - name: Upload distributions artifact
         uses: actions/upload-artifact@v4

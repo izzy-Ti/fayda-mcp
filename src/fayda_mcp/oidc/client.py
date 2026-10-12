@@ -15,7 +15,7 @@ class FaydaHttpClient:
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(config.http_timeout_seconds),
             limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
-            headers={"User-Agent": "fayda-mcp/0.1.0"},
+            headers={"User-Agent": "fayda-mcp/0.1.2"},
         )
 
     @property

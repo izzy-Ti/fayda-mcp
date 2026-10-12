@@ -1,6 +1,6 @@
 # Fayda MCP Python Library (`fayda-mcp`)
 
-[![PyPI version](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://pypi.org/project/fayda-mcp/)
+[![PyPI version](https://img.shields.io/badge/version-0.1.2-blue.svg)](https://pypi.org/project/fayda-mcp/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An importable, headless Python library providing Model Context Protocol (MCP) tools and verification services for Ethiopian National ID (Fayda eSignet).
@@ -10,6 +10,7 @@ An importable, headless Python library providing Model Context Protocol (MCP) to
 - **Explicit FastMCP Tools**:
   - eSignet OIDC: `start_verification`, `get_verification_status`, `get_verification_result`, `cancel_verification`.
   - Offline QR Code: `submit_qr_verification`, `get_qr_verification_result`.
+  - Policy & Health: `list_allowed_checks`, `list_verification_purposes`, `check_service_health`.
 - **Zero Raw Demographic / Biometric Leaks**: Outputs minimal boolean predicates (`identity_verified`, `age_over_18`, `credential_signature_valid`), strictly forbidding citizen biometrics, OTPs, or demographic dumps from entering LLM contexts.
 - **Offline & Edge Verification**: High-density QR verification runs completely offline—requiring **no OIDC callback, no webhook, and no client private signing key** (only authority public key / trust bundle).
 - **Physical Credential Security Boundaries**: Physical QR scanning validates issuer provenance and credential integrity, but strictly sets `holder_authenticated=false` and never asserts `identity_verified` without live authentication. Copied/screenshotted QR threat model is enforced fail-closed.

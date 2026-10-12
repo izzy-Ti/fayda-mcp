@@ -514,11 +514,12 @@ class FaydaVerificationService:
         if private_key:
             # Sign client assertion
             alg = self.config.allowed_algorithms[0] if self.config.allowed_algorithms else "RS256"
+            # Official Fayda spec uses header: {"alg": "RS256", "typ": "JWT"} (no kid)
             client_assertion = create_client_assertion(
                 config=self.config,
                 private_key=private_key,
                 algorithm=alg,
-                key_id=self.config.key_id,
+                key_id=None,
             )
 
             # Exchange code with original PKCE verifier

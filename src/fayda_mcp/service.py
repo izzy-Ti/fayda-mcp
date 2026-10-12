@@ -213,6 +213,61 @@ class FaydaVerificationService:
             if current_rec.get("status") == "pending":
                 auth_url = current_rec.get("authorization_url") or current_rec.get("auth_url") or ""
 
+            if not auth_url and current_rec.get("status") not in ("verified", "processing"):
+                # Regenerate fresh session and auth URL so retrying verification works reliably
+                actual_req_id = current_rec["request_id"]
+                state = generate_secure_token(32)
+                nonce = generate_secure_token(32)
+                code_verifier, code_challenge = generate_pkce_pair()
+                scopes, claims_param = self.policy.resolve_scopes_and_claims(resolved_checks)
+                auth_url = build_authorization_url(
+                    config=self.config,
+                    state=state,
+                    nonce=nonce,
+                    code_challenge=code_challenge,
+                    scopes=scopes,
+                    claims=claims_param,
+                )
+                session_data = {
+                    "request_id": actual_req_id,
+                    "tenant_id": context.tenant_id,
+                    "principal_id": context.principal_id,
+                    "application_user_ref": application_user_ref,
+                    "nonce": nonce,
+                    "code_verifier": code_verifier,
+                    "purpose": purpose,
+                    "checks": resolved_checks,
+                    "required_checks": required_list,
+                    "optional_checks": optional_list,
+                    "expires_at": expires_at,
+                    "browser_binding": context.browser_binding,
+                }
+                try:
+                    await self.sessions.save_session(
+                        state, session_data, ttl_seconds=self.config.session_ttl_seconds
+                    )
+                    pending_record = {
+                        "request_id": actual_req_id,
+                        "tenant_id": context.tenant_id,
+                        "principal_id": context.principal_id,
+                        "application_user_ref": application_user_ref,
+                        "purpose": purpose,
+                        "checks": resolved_checks,
+                        "required_checks": required_list,
+                        "optional_checks": optional_list,
+                        "status": "pending",
+                        "expires_at": expires_at,
+                        "idempotency_key": idempotency_key,
+                        "request_fingerprint": fingerprint,
+                        "authorization_url": auth_url,
+                        "policy_version": self.policy.version,
+                    }
+                    await self.results.save_request(
+                        actual_req_id, pending_record, ttl_seconds=self.config.result_ttl_seconds
+                    )
+                except Exception:
+                    pass
+
             exp_str = current_rec.get("expires_at")
             if not exp_str and current_rec.get("session_expires_at"):
                 try:

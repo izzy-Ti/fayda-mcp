@@ -183,6 +183,12 @@ class RedisSessionStore:
         parsed_url = parse_redis_url(redis_url)
         if "decode_responses" not in redis_kwargs:
             redis_kwargs["decode_responses"] = True
+        if "socket_connect_timeout" not in redis_kwargs:
+            redis_kwargs["socket_connect_timeout"] = 15.0
+        if "socket_timeout" not in redis_kwargs:
+            redis_kwargs["socket_timeout"] = 15.0
+        if "retry_on_timeout" not in redis_kwargs:
+            redis_kwargs["retry_on_timeout"] = True
         client = aioredis.from_url(parsed_url, **redis_kwargs)
         store = cls(redis_client=client, key_prefix=key_prefix)
         store._owned_client = True

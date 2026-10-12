@@ -75,7 +75,7 @@ def discover_oidc_configuration(
     if http_cli is None:
         http_cli = httpx.Client(
             timeout=timeout,
-            headers={"User-Agent": "fayda-mcp/0.1.0"},
+            headers={"User-Agent": "fayda-mcp/0.1.2"},
             follow_redirects=True,
         )
         close_client = True

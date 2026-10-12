@@ -43,7 +43,7 @@ from fayda_mcp.schemas import (
 from fayda_mcp.service import FaydaVerificationService
 from fayda_mcp.mcp.factory import create_mcp_server
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 __all__ = [
     "__version__",

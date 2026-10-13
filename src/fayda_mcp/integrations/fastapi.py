@@ -207,6 +207,42 @@ def create_fastapi_app(
     async def health_check():
         return {"status": "ok", "service": "fayda-mcp"}
 
+    # Expected details submission route for backend integrations
+    from fayda_mcp.context import CallerContext
+    from fayda_mcp.matching.schemas import (
+        ExpectedDetailsSubmission,
+        ExpectedDetailsSubmissionResponse,
+    )
+
+    @app.post(
+        "/verification/details/expected",
+        response_model=ExpectedDetailsSubmissionResponse,
+        tags=["details-matching"],
+        summary="Submit expected identity details from host backend and receive an opaque reference",
+    )
+    async def submit_expected_details_endpoint(
+        submission: ExpectedDetailsSubmission,
+        request: Request,
+    ):
+        tenant_id = request.headers.get("x-tenant-id", "default")
+        principal_id = request.headers.get("x-principal-id", "backend_service")
+        scopes_header = request.headers.get("x-caller-scopes", "verification:create")
+        scopes = [s.strip() for s in scopes_header.split(",") if s.strip()]
+        ctx = CallerContext(
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+            scopes=scopes,
+            application_user_ref=submission.application_user_ref,
+        )
+
+        return await service.submit_expected_details(
+            application_user_ref=submission.application_user_ref,
+            purpose=submission.purpose,
+            expected_details=submission.expected_details,
+            context=ctx,
+            ttl_seconds=submission.ttl_seconds,
+        )
+
     # Mount FastMCP server if provided
     if mcp_server is not None and hasattr(mcp_server, "http_app"):
         app.mount(mcp_path, mcp_server.http_app())

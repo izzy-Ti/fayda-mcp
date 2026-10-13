@@ -87,6 +87,11 @@ class FaydaVerificationService:
             audit=self.audit,
             success_hook=qr_success_hook,
         )
+        from fayda_mcp.matching.service import DetailsMatchingService
+        self.matching_service = DetailsMatchingService(
+            policy=self.policy,
+            session_store=self.sessions,
+        )
 
     async def __aenter__(self) -> "FaydaVerificationService":
         return self
@@ -719,4 +724,45 @@ class FaydaVerificationService:
             request_id=request_id,
             context=context,
             filter_output=filter_output,
+        )
+
+    async def submit_expected_details(
+        self,
+        application_user_ref: str,
+        purpose: str,
+        expected_details: Union[Any, Dict[str, Any]],
+        context: Optional[CallerContext] = None,
+        ttl_seconds: int = 900,
+    ) -> Any:
+        """Submit expected identity details from an authenticated host backend and obtain an opaque reference.
+
+        Args:
+            application_user_ref: Host application user identifier to bind.
+            purpose: Approved business purpose for verification (e.g. 'onboarding', 'kyc').
+            expected_details: Expected citizen details (full_name and/or date_of_birth).
+            context: Authenticated CallerContext identifying caller principal and tenant.
+            ttl_seconds: Time-to-live for the expected details record (default: 900s).
+
+        Returns:
+            ExpectedDetailsSubmissionResponse containing opaque expected_details_ref and expiry.
+        """
+        return await self.matching_service.submit_expected_details(
+            application_user_ref=application_user_ref,
+            purpose=purpose,
+            expected_details=expected_details,
+            context=context,
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def get_expected_details_record(
+        self,
+        ref: str,
+        context: Optional[CallerContext] = None,
+        validate_caller: bool = True,
+    ) -> Any:
+        """Retrieve an expected details record by reference, verifying caller ownership."""
+        return await self.matching_service.get_expected_details_record(
+            ref=ref,
+            context=context,
+            validate_caller=validate_caller,
         )

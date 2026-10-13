@@ -25,6 +25,15 @@ from fayda_mcp.matching.schemas import (
     StartDetailsVerificationResponse,
     compute_overall_matching_status,
 )
+from fayda_mcp.matching.service import (
+    DetailsMatchingService,
+    generate_expected_details_ref,
+)
+from fayda_mcp.matching.storage import (
+    ExpectedDetailsStore,
+    MemoryExpectedDetailsStore,
+    SessionExpectedDetailsStore,
+)
 
 __all__ = [
     "DEFAULT_COMPARISON_POLICY_VERSION",
@@ -50,4 +59,9 @@ __all__ = [
     "StartDetailsVerificationResponse",
     "DetailsMatchResult",
     "compute_overall_matching_status",
+    "DetailsMatchingService",
+    "generate_expected_details_ref",
+    "ExpectedDetailsStore",
+    "MemoryExpectedDetailsStore",
+    "SessionExpectedDetailsStore",
 ]

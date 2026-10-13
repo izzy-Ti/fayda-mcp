@@ -16,7 +16,9 @@ from fayda_mcp.exceptions import FaydaMCPError
 # ---------------------------------------------------------------------------
 
 DEFAULT_COMPARISON_POLICY_VERSION: str = "details-v1"
-DEFAULT_EXPECTED_DETAILS_TTL_SECONDS: int = 900  # 15 minutes max TTL for expected details
+DEFAULT_EXPECTED_DETAILS_TTL_SECONDS: int = 900  # 15 minutes max default TTL for expected details
+MIN_EXPECTED_DETAILS_TTL_SECONDS: int = 60  # 1 minute minimum TTL
+MAX_EXPECTED_DETAILS_TTL_SECONDS: int = 3600  # 1 hour maximum permitted TTL
 
 MATCH_FIELD_FULL_NAME: str = "full_name"
 MATCH_FIELD_DATE_OF_BIRTH: str = "date_of_birth"
@@ -267,13 +269,26 @@ class ExpectedDetailsRecord(BaseModel):
     principal_id: str = Field(..., description="Authenticated caller principal identifier")
     application_user_ref: str = Field(..., description="Bound host application user identifier")
     purpose: str = Field(..., description="Bound business purpose")
-    expected_details: ExpectedDetails = Field(..., description="Stored expected details")
+    expected_details: Optional[ExpectedDetails] = Field(
+        default=None,
+        description="Stored expected details (decrypted in-memory)",
+    )
+    encrypted_details: Optional[str] = Field(
+        default=None,
+        description="Authenticated ciphertext blob (AES-256-GCM) storing retained details at rest",
+    )
     created_at: str = Field(..., description="ISO 8601 UTC creation timestamp")
     expires_at: str = Field(..., description="ISO 8601 UTC expiration timestamp")
     bound_request_id: Optional[str] = Field(
         default=None,
         description="Opaque verification request_id once bound by start tool",
     )
+
+    @model_validator(mode="after")
+    def validate_details_presence(self) -> "ExpectedDetailsRecord":
+        if self.expected_details is None and not self.encrypted_details:
+            raise ValueError("ExpectedDetailsRecord must contain either expected_details or encrypted_details")
+        return self
 
 
 # ---------------------------------------------------------------------------

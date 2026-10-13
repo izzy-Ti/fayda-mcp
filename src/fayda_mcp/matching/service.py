@@ -9,8 +9,11 @@ from fayda_mcp.exceptions import (
     AuthorizationError,
     PolicyViolationError,
 )
+from fayda_mcp.matching.crypto import DetailsEncryptor
 from fayda_mcp.matching.schemas import (
     DEFAULT_EXPECTED_DETAILS_TTL_SECONDS,
+    MAX_EXPECTED_DETAILS_TTL_SECONDS,
+    MIN_EXPECTED_DETAILS_TTL_SECONDS,
     DetailsAlreadyBoundError,
     DetailsCallerMismatchError,
     DetailsMatchingError,
@@ -49,14 +52,21 @@ class DetailsMatchingService:
         policy: Optional[VerificationPolicy] = None,
         store: Optional[ExpectedDetailsStore] = None,
         session_store: Optional[SessionStore] = None,
+        encryptor: Optional[DetailsEncryptor] = None,
+        encryption_key: Optional[Union[str, bytes]] = None,
     ) -> None:
         self.policy = policy or VerificationPolicy()
+        self.encryptor = encryptor or DetailsEncryptor(key=encryption_key)
+
         if store is not None:
             self.store = store
         elif session_store is not None:
-            self.store = SessionExpectedDetailsStore(session_store)
+            self.store = SessionExpectedDetailsStore(
+                session_store=session_store,
+                encryptor=self.encryptor,
+            )
         else:
-            self.store = MemoryExpectedDetailsStore()
+            self.store = MemoryExpectedDetailsStore(encryptor=self.encryptor)
 
     async def submit_expected_details(
         self,
@@ -114,15 +124,18 @@ class DetailsMatchingService:
                 DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
             )
 
-        # 5. Bound TTL
-        clamped_ttl = max(60, min(3600, int(ttl_seconds)))
+        # 5. Bound and enforce short TTL
+        clamped_ttl = max(
+            MIN_EXPECTED_DETAILS_TTL_SECONDS,
+            min(MAX_EXPECTED_DETAILS_TTL_SECONDS, int(ttl_seconds)),
+        )
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=clamped_ttl)
 
         # 6. Generate opaque reference
         ref = generate_expected_details_ref()
 
-        # 7. Create bound record
+        # 7. Create bound record (retained details will be encrypted at rest by the store)
         record = ExpectedDetailsRecord(
             ref=ref,
             tenant_id=ctx.tenant_id,
@@ -135,7 +148,7 @@ class DetailsMatchingService:
             bound_request_id=None,
         )
 
-        # 8. Persist into expected details store with short TTL
+        # 8. Persist into expected details store with short TTL and authenticated encryption
         await self.store.save_expected_details(ref, record, clamped_ttl)
 
         return ExpectedDetailsSubmissionResponse(
@@ -168,7 +181,7 @@ class DetailsMatchingService:
         if record is None:
             raise DetailsReferenceNotFoundError(ref)
 
-        # Check expiration timestamp
+        # Check expiration timestamp against UTC clock
         try:
             exp_dt = datetime.fromisoformat(record.expires_at)
             if exp_dt <= datetime.now(timezone.utc):
@@ -201,22 +214,47 @@ class DetailsMatchingService:
         purpose: str,
         context: Optional[CallerContext] = None,
     ) -> ExpectedDetailsRecord:
-        """Bind an expected details reference to a verification request.
+        """Bind an expected details reference to caller, user, purpose, and request.
 
         Validates caller ownership, application user, purpose, and prevents replay binding.
+        Enforces that the bound record cannot outlive its remaining TTL.
         """
+        if not request_id or not str(request_id).strip():
+            raise DetailsMatchingError(
+                "request_id must not be empty when binding expected details",
+                DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
+            )
+
+        clean_request_id = str(request_id).strip()
+
+        # 1. Retrieve record with caller validation and expiration check
         record = await self.get_expected_details_record(ref, context=context, validate_caller=True)
 
-        if record.bound_request_id is not None and record.bound_request_id != request_id:
+        # 2. Prevent replay binding to conflicting verification requests
+        if record.bound_request_id is not None and record.bound_request_id != clean_request_id:
             raise DetailsAlreadyBoundError(ref)
 
-        if record.application_user_ref != application_user_ref:
+        # 3. Verify application user binding
+        if record.application_user_ref != str(application_user_ref).strip():
             raise DetailsUserMismatchError(ref)
 
-        if record.purpose != purpose:
+        # 4. Verify purpose binding
+        if record.purpose != str(purpose).strip():
             raise DetailsPurposeMismatchError(ref)
 
-        # Mark as bound to this request
+        # 5. Check remaining TTL
+        exp_dt = datetime.fromisoformat(record.expires_at)
+        now_dt = datetime.now(timezone.utc)
+        remaining_ttl = int((exp_dt - now_dt).total_seconds())
+        if remaining_ttl <= 0:
+            await self.store.delete_expected_details(ref)
+            raise DetailsReferenceExpiredError(ref)
+
+        # 6. Idempotent check: already bound to this request
+        if record.bound_request_id == clean_request_id:
+            return record
+
+        # 7. Mark as bound to this request and update persistence
         updated_record = ExpectedDetailsRecord(
             ref=record.ref,
             tenant_id=record.tenant_id,
@@ -226,15 +264,29 @@ class DetailsMatchingService:
             expected_details=record.expected_details,
             created_at=record.created_at,
             expires_at=record.expires_at,
-            bound_request_id=request_id,
+            bound_request_id=clean_request_id,
         )
 
-        # Calculate remaining TTL
-        exp_dt = datetime.fromisoformat(record.expires_at)
-        remaining_ttl = max(10, int((exp_dt - datetime.now(timezone.utc)).total_seconds()))
-        await self.store.save_expected_details(ref, updated_record, remaining_ttl)
-
+        await self.store.save_expected_details(ref, updated_record, max(1, remaining_ttl))
         return updated_record
+
+    async def get_bound_expected_details_for_request(
+        self,
+        request_id: str,
+        context: Optional[CallerContext] = None,
+        validate_caller: bool = True,
+    ) -> ExpectedDetailsRecord:
+        """Retrieve the bound expected details record for an active verification request."""
+        clean_request_id = str(request_id).strip()
+        ref = await self.store.get_ref_by_request_id(clean_request_id)
+        if not ref:
+            raise DetailsReferenceNotFoundError(f"request:{clean_request_id}")
+
+        return await self.get_expected_details_record(
+            ref=ref,
+            context=context,
+            validate_caller=validate_caller,
+        )
 
     async def purge_expected_details(self, ref: str) -> bool:
         """Purge expected details record after matching is finalized."""

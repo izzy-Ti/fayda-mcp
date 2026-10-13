@@ -91,6 +91,7 @@ class FaydaVerificationService:
         self.matching_service = DetailsMatchingService(
             policy=self.policy,
             session_store=self.sessions,
+            encryption_key=self.config.details_encryption_key,
         )
 
     async def __aenter__(self) -> "FaydaVerificationService":
@@ -766,3 +767,34 @@ class FaydaVerificationService:
             context=context,
             validate_caller=validate_caller,
         )
+
+    async def bind_expected_details(
+        self,
+        ref: str,
+        request_id: str,
+        application_user_ref: str,
+        purpose: str,
+        context: Optional[CallerContext] = None,
+    ) -> Any:
+        """Bind an expected details reference to a verification request, user, and purpose."""
+        return await self.matching_service.bind_expected_details(
+            ref=ref,
+            request_id=request_id,
+            application_user_ref=application_user_ref,
+            purpose=purpose,
+            context=context,
+        )
+
+    async def get_bound_expected_details_for_request(
+        self,
+        request_id: str,
+        context: Optional[CallerContext] = None,
+        validate_caller: bool = True,
+    ) -> Any:
+        """Retrieve the bound expected details record for an active verification request."""
+        return await self.matching_service.get_bound_expected_details_for_request(
+            request_id=request_id,
+            context=context,
+            validate_caller=validate_caller,
+        )
+

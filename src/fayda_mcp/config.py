@@ -80,6 +80,8 @@ class FaydaConfig(BaseModel):
         data = self.model_dump()
         if data.get("signing_key"):
             data["signing_key"] = "[REDACTED]"
+        if data.get("details_encryption_key"):
+            data["details_encryption_key"] = "[REDACTED]"
         return data
 
     # Cryptographic & network settings
@@ -138,6 +140,17 @@ class FaydaConfig(BaseModel):
     qr_confirmed_calendars: List[str] = Field(
         default_factory=lambda: ["gregorian", "ethiopic"],
         description="List of recognized confirmed calendar systems for QR age predicates",
+    )
+
+    # Details matching settings (Tasks 01-10)
+    details_encryption_key: Optional[str] = Field(
+        default=None,
+        repr=False,
+        description="Symmetric encryption key for expected details at rest (AES-256-GCM hex/base64/passphrase)",
+    )
+    details_ttl_seconds: int = Field(
+        default=900,
+        description="Default TTL in seconds for expected details records (default: 900s, max: 3600s)",
     )
 
     def load_qr_trust_store(self) -> Any:
@@ -375,6 +388,20 @@ class FaydaConfig(BaseModel):
             ] or ["gregorian", "ethiopic"],
             qr_key_bundle_path=get_val(f"{env_prefix}QR_KEY_BUNDLE_PATH", "QR_KEY_BUNDLE_PATH", default="") or None,
             qr_public_key_pem=get_val(f"{env_prefix}QR_PUBLIC_KEY_PEM", "QR_PUBLIC_KEY_PEM", default="") or None,
+            details_encryption_key=get_val(
+                f"{env_prefix}DETAILS_ENCRYPTION_KEY",
+                f"{env_prefix}ENCRYPTION_KEY",
+                "DETAILS_ENCRYPTION_KEY",
+                "ENCRYPTION_KEY",
+                default="",
+            ) or None,
+            details_ttl_seconds=int(
+                get_val(
+                    f"{env_prefix}DETAILS_TTL_SECONDS",
+                    "DETAILS_TTL_SECONDS",
+                    default="900",
+                )
+            ),
         )
 
     @classmethod

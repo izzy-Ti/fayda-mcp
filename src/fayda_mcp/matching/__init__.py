@@ -1,8 +1,14 @@
 """Fayda details matching module."""
 
+from fayda_mcp.matching.crypto import (
+    DetailsEncryptor,
+    derive_encryption_key,
+)
 from fayda_mcp.matching.schemas import (
     DEFAULT_COMPARISON_POLICY_VERSION,
     DEFAULT_EXPECTED_DETAILS_TTL_SECONDS,
+    MAX_EXPECTED_DETAILS_TTL_SECONDS,
+    MIN_EXPECTED_DETAILS_TTL_SECONDS,
     MATCH_FIELD_DATE_OF_BIRTH,
     MATCH_FIELD_FULL_NAME,
     SUPPORTED_MATCH_FIELDS,
@@ -38,6 +44,8 @@ from fayda_mcp.matching.storage import (
 __all__ = [
     "DEFAULT_COMPARISON_POLICY_VERSION",
     "DEFAULT_EXPECTED_DETAILS_TTL_SECONDS",
+    "MIN_EXPECTED_DETAILS_TTL_SECONDS",
+    "MAX_EXPECTED_DETAILS_TTL_SECONDS",
     "MATCH_FIELD_DATE_OF_BIRTH",
     "MATCH_FIELD_FULL_NAME",
     "SUPPORTED_MATCH_FIELDS",
@@ -64,4 +72,6 @@ __all__ = [
     "ExpectedDetailsStore",
     "MemoryExpectedDetailsStore",
     "SessionExpectedDetailsStore",
+    "DetailsEncryptor",
+    "derive_encryption_key",
 ]

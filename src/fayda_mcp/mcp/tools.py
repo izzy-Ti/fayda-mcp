@@ -17,7 +17,10 @@ from fayda_mcp.qr.schemas import (
     QRVerificationResult,
     filter_agent_output,
 )
-from fayda_mcp.matching.schemas import StartDetailsVerificationResponse
+from fayda_mcp.matching.schemas import (
+    DetailsMatchResult,
+    StartDetailsVerificationResponse,
+)
 from fayda_mcp.schemas import (
     CancelVerificationResponse,
     StartVerificationResponse,
@@ -122,6 +125,29 @@ def register_tools(
             application_user_ref=application_user_ref,
             idempotency_key=idempotency_key,
         )
+
+    @server.tool()
+    async def get_details_match_result(request_id: str) -> DetailsMatchResult:
+        """Retrieve minimal citizen details match outcome by opaque request identifier.
+
+        Returns matching_status ('matched', 'mismatched', 'unavailable', or 'pending'),
+        tri-state field matches (true, false, null), comparison policy version ('details-v1'),
+        checked timestamp, and safe reasons.
+        Strictly excludes citizen demographics (names, DOBs), FANs, and provider tokens.
+
+        Args:
+            request_id: Unique verification request identifier.
+        """
+        ctx = await adapter.resolve_context("get_details_match_result", request_id=request_id)
+        allowed = await adapter.authorize(ctx, "verification:read", request_id)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:read'")
+
+        result = await service.get_details_match_result(request_id=request_id, context=ctx)
+        if result is None:
+            raise VerificationNotFoundError(f"Details verification request '{request_id}' not found")
+
+        return result
 
     @server.tool()
     async def get_verification_status(request_id: str) -> VerificationStatusResponse:

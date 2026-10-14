@@ -511,19 +511,15 @@ class FaydaVerificationService:
                 nonce = generate_secure_token(32)
                 code_verifier, code_challenge = generate_pkce_pair()
 
-                userinfo_claims: Dict[str, Any] = {"sub": {"essential": True}}
-                if record.expected_details and record.expected_details.full_name:
-                    userinfo_claims["name"] = {"essential": True}
-                if record.expected_details and record.expected_details.date_of_birth:
-                    userinfo_claims["birthdate"] = {"essential": True}
-
-                claims_param = {"userinfo": userinfo_claims}
+                scopes, claims_param = self.policy.resolve_details_scopes_and_claims(
+                    record.expected_details
+                )
                 auth_url = build_authorization_url(
                     config=self.config,
                     state=state,
                     nonce=nonce,
                     code_challenge=code_challenge,
-                    scopes=["openid", "profile"],
+                    scopes=scopes,
                     claims=claims_param,
                 )
                 session_data = {
@@ -611,19 +607,15 @@ class FaydaVerificationService:
         nonce = generate_secure_token(32)
         code_verifier, code_challenge = generate_pkce_pair()
 
-        userinfo_claims: Dict[str, Any] = {"sub": {"essential": True}}
-        if record.expected_details and record.expected_details.full_name:
-            userinfo_claims["name"] = {"essential": True}
-        if record.expected_details and record.expected_details.date_of_birth:
-            userinfo_claims["birthdate"] = {"essential": True}
-
-        claims_param = {"userinfo": userinfo_claims}
+        scopes, claims_param = self.policy.resolve_details_scopes_and_claims(
+            record.expected_details
+        )
         auth_url = build_authorization_url(
             config=self.config,
             state=state,
             nonce=nonce,
             code_challenge=code_challenge,
-            scopes=["openid", "profile"],
+            scopes=scopes,
             claims=claims_param,
         )
 

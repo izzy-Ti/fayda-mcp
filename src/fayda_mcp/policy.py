@@ -200,4 +200,12 @@ class VerificationPolicy(BaseModel):
         reg = self.get_registry()
         return reg.resolve_scopes_and_claims(resolved)
 
+    def resolve_details_scopes_and_claims(
+        self, expected_details: Optional[Any]
+    ) -> Tuple[List[str], Dict[str, Any]]:
+        """Resolve minimal approved OIDC scopes and essential claims for details matching."""
+        from fayda_mcp.matching.claims import resolve_details_matching_scopes_and_claims
+        return resolve_details_matching_scopes_and_claims(expected_details)
+
+
 

@@ -1,5 +1,18 @@
 """Fayda details matching module."""
 
+from fayda_mcp.matching.claims import (
+    CLAIM_BIRTHDATE,
+    CLAIM_NAME,
+    CLAIM_SUB,
+    REASON_PROVIDER_CLAIM_UNAVAILABLE,
+    REASON_UNAUTHENTICATED,
+    REASON_UNSUPPORTED_FIELD,
+    SCOPE_OPENID,
+    SCOPE_PROFILE,
+    evaluate_initial_availability,
+    extract_approved_matching_claims,
+    resolve_details_matching_scopes_and_claims,
+)
 from fayda_mcp.matching.crypto import (
     DetailsEncryptor,
     derive_encryption_key,
@@ -74,4 +87,15 @@ __all__ = [
     "SessionExpectedDetailsStore",
     "DetailsEncryptor",
     "derive_encryption_key",
+    "CLAIM_SUB",
+    "CLAIM_NAME",
+    "CLAIM_BIRTHDATE",
+    "SCOPE_OPENID",
+    "SCOPE_PROFILE",
+    "REASON_PROVIDER_CLAIM_UNAVAILABLE",
+    "REASON_UNSUPPORTED_FIELD",
+    "REASON_UNAUTHENTICATED",
+    "resolve_details_matching_scopes_and_claims",
+    "extract_approved_matching_claims",
+    "evaluate_initial_availability",
 ]

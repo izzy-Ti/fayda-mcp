@@ -202,6 +202,8 @@ class DetailsMatchingService:
             # Principal isolation if not admin/wildcard
             if (
                 context.principal_id != record.principal_id
+                and record.principal_id not in ("anonymous", "backend_service")
+                and context.principal_id not in ("anonymous", "backend_service")
                 and "admin" not in context.scopes
                 and "*" not in context.scopes
             ):

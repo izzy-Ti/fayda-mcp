@@ -225,7 +225,7 @@ def create_fastapi_app(
         request: Request,
     ):
         tenant_id = request.headers.get("x-tenant-id", "default")
-        principal_id = request.headers.get("x-principal-id", "backend_service")
+        principal_id = request.headers.get("x-principal-id", "anonymous")
         scopes_header = request.headers.get("x-caller-scopes", "verification:create")
         scopes = [s.strip() for s in scopes_header.split(",") if s.strip()]
         ctx = CallerContext(

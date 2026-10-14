@@ -8,7 +8,11 @@ import time
 from typing import Any, Dict, Optional, Protocol, runtime_checkable
 
 from fayda_mcp.matching.crypto import DetailsEncryptor
-from fayda_mcp.matching.schemas import ExpectedDetails, ExpectedDetailsRecord
+from fayda_mcp.matching.schemas import (
+    DetailsMatchResult,
+    ExpectedDetails,
+    ExpectedDetailsRecord,
+)
 from fayda_mcp.storage.protocols import SessionStore
 
 
@@ -46,6 +50,22 @@ class ExpectedDetailsStore(Protocol):
         """Retrieve bound expected_details_ref by verification request_id."""
         ...
 
+    async def save_match_result(
+        self,
+        request_id: str,
+        result: DetailsMatchResult,
+        ttl_seconds: int,
+    ) -> None:
+        """Store evaluated minimal details match outcome with expiration TTL."""
+        ...
+
+    async def get_match_result(
+        self,
+        request_id: str,
+    ) -> Optional[DetailsMatchResult]:
+        """Retrieve evaluated minimal details match outcome by request_id."""
+        ...
+
     async def close(self) -> None:
         """Close underlying connection pools and resources."""
         ...
@@ -59,6 +79,7 @@ class MemoryExpectedDetailsStore:
         self._records: Dict[str, Dict[str, Any]] = {}
         self._expirations: Dict[str, float] = {}
         self._request_index: Dict[str, str] = {}
+        self._match_results: Dict[str, Tuple[Dict[str, Any], float]] = {}
 
     async def save_expected_details(
         self,
@@ -125,10 +146,34 @@ class MemoryExpectedDetailsStore:
             return None
         return ref
 
+    async def save_match_result(
+        self,
+        request_id: str,
+        result: DetailsMatchResult,
+        ttl_seconds: int,
+    ) -> None:
+        raw = result.model_dump()
+        expires_at = time.time() + max(1, ttl_seconds)
+        self._match_results[request_id] = (raw, expires_at)
+
+    async def get_match_result(
+        self,
+        request_id: str,
+    ) -> Optional[DetailsMatchResult]:
+        entry = self._match_results.get(request_id)
+        if not entry:
+            return None
+        raw, exp = entry
+        if time.time() >= exp:
+            self._match_results.pop(request_id, None)
+            return None
+        return DetailsMatchResult(**raw)
+
     async def close(self) -> None:
         self._records.clear()
         self._expirations.clear()
         self._request_index.clear()
+        self._match_results.clear()
 
 
 class SessionExpectedDetailsStore:
@@ -207,6 +252,30 @@ class SessionExpectedDetailsStore:
         if not data or not data.get("ref"):
             return None
         return str(data["ref"])
+
+    def _res_key(self, request_id: str) -> str:
+        return f"{self._prefix}res:{request_id}"
+
+    async def save_match_result(
+        self,
+        request_id: str,
+        result: DetailsMatchResult,
+        ttl_seconds: int,
+    ) -> None:
+        await self._session_store.save_session(
+            self._res_key(request_id),
+            result.model_dump(),
+            max(1, ttl_seconds),
+        )
+
+    async def get_match_result(
+        self,
+        request_id: str,
+    ) -> Optional[DetailsMatchResult]:
+        data = await self._session_store.get_session(self._res_key(request_id))
+        if not data:
+            return None
+        return DetailsMatchResult(**data)
 
     async def close(self) -> None:
         await self._session_store.close()

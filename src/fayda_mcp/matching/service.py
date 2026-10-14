@@ -10,12 +10,15 @@ from fayda_mcp.exceptions import (
     PolicyViolationError,
 )
 from fayda_mcp.matching.crypto import DetailsEncryptor
+from fayda_mcp.matching.normalization import evaluate_details_matching
 from fayda_mcp.matching.schemas import (
+    DEFAULT_COMPARISON_POLICY_VERSION,
     DEFAULT_EXPECTED_DETAILS_TTL_SECONDS,
     MAX_EXPECTED_DETAILS_TTL_SECONDS,
     MIN_EXPECTED_DETAILS_TTL_SECONDS,
     DetailsAlreadyBoundError,
     DetailsCallerMismatchError,
+    DetailsMatchResult,
     DetailsMatchingError,
     DetailsMatchingErrorCode,
     DetailsPurposeMismatchError,
@@ -291,3 +294,167 @@ class DetailsMatchingService:
     async def purge_expected_details(self, ref: str) -> bool:
         """Purge expected details record after matching is finalized."""
         return await self.store.delete_expected_details(ref)
+
+    async def evaluate_details_for_request(
+        self,
+        request_id: str,
+        claims: Dict[str, Any],
+        provider_dob_calendar: str = "gregorian",
+        expected_details_ref: Optional[str] = None,
+        application_user_ref: Optional[str] = None,
+        purpose: Optional[str] = None,
+        expires_at: Optional[str] = None,
+        identity_authenticated: bool = True,
+    ) -> DetailsMatchResult:
+        """Compare permitted validated claims with bound expected details.
+
+        Strictly deterministic; extracts only permitted name/DOB claims.
+        Stores minimal match outcomes and safe reasons, never raw claims.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        clean_request_id = str(request_id).strip()
+
+        # 1. Resolve bound record
+        record: Optional[ExpectedDetailsRecord] = None
+        record_error_reason: Optional[str] = None
+
+        if expected_details_ref:
+            try:
+                record = await self.get_expected_details_record(
+                    ref=expected_details_ref,
+                    validate_caller=False,
+                )
+            except DetailsReferenceExpiredError:
+                record_error_reason = "details_reference_expired"
+            except DetailsReferenceNotFoundError:
+                record_error_reason = "details_reference_not_found"
+            except Exception:
+                record_error_reason = "details_reference_not_found"
+
+        if record is None and not record_error_reason:
+            try:
+                record = await self.get_bound_expected_details_for_request(
+                    request_id=clean_request_id,
+                    validate_caller=False,
+                )
+            except DetailsReferenceExpiredError:
+                record_error_reason = "details_reference_expired"
+            except DetailsReferenceNotFoundError:
+                record_error_reason = "details_reference_not_found"
+            except Exception:
+                record_error_reason = "details_reference_not_found"
+
+        if record is None:
+            safe_reason = record_error_reason or "details_reference_not_found"
+            res = DetailsMatchResult(
+                request_id=clean_request_id,
+                verification_method="esignet",
+                matching_status="unavailable",
+                matches={},
+                comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                required_fields=[],
+                checked_at=now_iso,
+                expires_at=expires_at,
+                reasons={"details_matching": safe_reason},
+                identity_authenticated=identity_authenticated,
+                evidence_ref=f"ev_{clean_request_id}",
+            )
+            await self.store.save_match_result(clean_request_id, res, ttl_seconds=900)
+            return res
+
+        # 2. Verify bound application_user_ref and purpose
+        if application_user_ref and record.application_user_ref != str(application_user_ref).strip():
+            res = DetailsMatchResult(
+                request_id=clean_request_id,
+                verification_method="esignet",
+                matching_status="unavailable",
+                matches={},
+                comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                required_fields=list(record.expected_details.required_fields or []) if record.expected_details else [],
+                checked_at=now_iso,
+                expires_at=expires_at or record.expires_at,
+                reasons={"details_matching": "details_user_mismatch"},
+                identity_authenticated=identity_authenticated,
+                evidence_ref=f"ev_{clean_request_id}",
+            )
+            await self.store.save_match_result(clean_request_id, res, ttl_seconds=900)
+            return res
+
+        if purpose and record.purpose != str(purpose).strip():
+            res = DetailsMatchResult(
+                request_id=clean_request_id,
+                verification_method="esignet",
+                matching_status="unavailable",
+                matches={},
+                comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                required_fields=list(record.expected_details.required_fields or []) if record.expected_details else [],
+                checked_at=now_iso,
+                expires_at=expires_at or record.expires_at,
+                reasons={"details_matching": "details_purpose_mismatch"},
+                identity_authenticated=identity_authenticated,
+                evidence_ref=f"ev_{clean_request_id}",
+            )
+            await self.store.save_match_result(clean_request_id, res, ttl_seconds=900)
+            return res
+
+        if not record.expected_details:
+            res = DetailsMatchResult(
+                request_id=clean_request_id,
+                verification_method="esignet",
+                matching_status="unavailable",
+                matches={},
+                comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                required_fields=[],
+                checked_at=now_iso,
+                expires_at=expires_at or record.expires_at,
+                reasons={"details_matching": "missing_expected_details"},
+                identity_authenticated=identity_authenticated,
+                evidence_ref=f"ev_{clean_request_id}",
+            )
+            await self.store.save_match_result(clean_request_id, res, ttl_seconds=900)
+            return res
+
+        # 3. Deterministically evaluate expected details against validated permitted claims
+        matches, reasons, overall_status = evaluate_details_matching(
+            expected_details=record.expected_details,
+            claims=claims,
+            provider_dob_calendar=provider_dob_calendar,
+        )
+
+        res = DetailsMatchResult(
+            request_id=clean_request_id,
+            verification_method="esignet",
+            matching_status=overall_status,
+            matches=matches,
+            comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+            required_fields=list(record.expected_details.required_fields or matches.keys()),
+            checked_at=now_iso,
+            expires_at=expires_at or record.expires_at,
+            reasons=reasons,
+            identity_authenticated=identity_authenticated,
+            evidence_ref=f"ev_{clean_request_id}",
+        )
+
+        # 4. Save minimal outcome
+        await self.store.save_match_result(clean_request_id, res, ttl_seconds=900)
+        return res
+
+    async def save_match_result(
+        self,
+        request_id: str,
+        result: DetailsMatchResult,
+        ttl_seconds: int = 900,
+    ) -> None:
+        """Store evaluated minimal details match outcome with expiration TTL."""
+        await self.store.save_match_result(
+            request_id=str(request_id).strip(),
+            result=result,
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def get_match_result(
+        self,
+        request_id: str,
+    ) -> Optional[DetailsMatchResult]:
+        """Retrieve evaluated minimal details match outcome by request_id."""
+        return await self.store.get_match_result(str(request_id).strip())

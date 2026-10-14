@@ -54,6 +54,7 @@ from fayda_mcp.matching.schemas import (
     DEFAULT_COMPARISON_POLICY_VERSION,
     DetailsAlreadyBoundError,
     DetailsCallerMismatchError,
+    DetailsMatchResult,
     DetailsMatchingError,
     DetailsMatchingErrorCode,
     DetailsPurposeMismatchError,
@@ -915,6 +916,35 @@ class FaydaVerificationService:
                 checks,
                 pred_ctx,
             )
+
+            # Details matching in callback: compare permitted claims before discarding raw claims (Task 07)
+            details_match_result: Optional[DetailsMatchResult] = None
+            is_details_flow = (
+                session_data.get("verification_type") == "details_matching"
+                or record.get("verification_type") == "details_matching"
+                or bool(session_data.get("expected_details_ref"))
+                or bool(record.get("expected_details_ref"))
+            )
+            if is_details_flow and self.matching_service:
+                details_ref = session_data.get("expected_details_ref") or record.get("expected_details_ref")
+                user_ref = session_data.get("application_user_ref") or record.get("application_user_ref")
+                req_purpose = session_data.get("purpose") or record.get("purpose")
+                details_match_result = await self.matching_service.evaluate_details_for_request(
+                    request_id=request_id,
+                    claims=raw_all_claims,
+                    provider_dob_calendar=source_cal,
+                    expected_details_ref=details_ref,
+                    application_user_ref=user_ref,
+                    purpose=req_purpose,
+                    expires_at=record.get("expires_at"),
+                    identity_authenticated=True,
+                )
+
+            # Strictly discard raw citizen claims from memory immediately
+            raw_all_claims.clear()
+            id_claims.clear()
+            userinfo_claims.clear()
+            normalized.clear()
         else:
             raise ConfigurationError(
                 "A Fayda signing key is required for verification."
@@ -951,6 +981,21 @@ class FaydaVerificationService:
                 if c in required_set:
                     missing_required = True
 
+        # Apply details matching outcome to verification checks
+        if is_details_flow and details_match_result:
+            result_reasons.update(details_match_result.reasons)
+            if details_match_result.matching_status == "matched":
+                result_checks["identity_verified"] = True
+                result_checks["details_matched"] = True
+            elif details_match_result.matching_status == "mismatched":
+                result_checks["identity_verified"] = True
+                result_checks["details_matched"] = False
+                has_rejection = True
+            else:
+                result_checks["identity_verified"] = True
+                result_checks["details_matched"] = None
+                missing_required = True
+
         # Determine outcome status
         if has_rejection:
             outcome_status = "rejected"
@@ -980,7 +1025,10 @@ class FaydaVerificationService:
 
         audit_payload = {
             "event_type": "verification_completed",
-            "metadata": {"status": outcome_status},
+            "metadata": {
+                "status": outcome_status,
+                "verification_type": "details_matching" if is_details_flow else "standard",
+            },
         }
 
         # Atomically finalize to ensure concurrent callbacks cannot finalize twice
@@ -992,6 +1040,27 @@ class FaydaVerificationService:
         )
         if not finalized:
             raise InvalidStateError("Verification request has already been finalized or cancelled")
+
+        if is_details_flow and details_match_result:
+            # Persist minimal match outcomes on the request record
+            details_record_data = {
+                "verification_type": "details_matching",
+                "matching_status": details_match_result.matching_status,
+                "matches": details_match_result.matches,
+                "comparison_policy_version": details_match_result.comparison_policy_version,
+                "required_fields": details_match_result.required_fields,
+                "checked_at": details_match_result.checked_at,
+                "identity_authenticated": details_match_result.identity_authenticated,
+                "details_reasons": details_match_result.reasons,
+            }
+            try:
+                await self.results.save_request(
+                    request_id,
+                    {**record, **details_record_data, "status": outcome_status},
+                    ttl_seconds=self.config.result_ttl_seconds,
+                )
+            except Exception:
+                pass
 
         if self.audit:
             await self.audit.record_event(
@@ -1113,5 +1182,109 @@ class FaydaVerificationService:
             request_id=request_id,
             context=context,
             validate_caller=validate_caller,
+        )
+
+    async def evaluate_details_matching_for_request(
+        self,
+        request_id: str,
+        claims: Dict[str, Any],
+        context: Optional[CallerContext] = None,
+        provider_dob_calendar: Optional[str] = None,
+    ) -> DetailsMatchResult:
+        """Run details matching for a request against permitted claims."""
+        clean_req_id = str(request_id).strip()
+        record = await self.results.get_request(clean_req_id)
+        if not record:
+            raise VerificationNotFoundError(f"Verification request '{clean_req_id}' not found")
+
+        if context is not None:
+            self._authorize_caller(record, context)
+
+        source_cal = provider_dob_calendar or getattr(self.config, "dob_source_calendar", "gregorian")
+        details_ref = record.get("expected_details_ref")
+        user_ref = record.get("application_user_ref")
+        purpose = record.get("purpose")
+
+        return await self.matching_service.evaluate_details_for_request(
+            request_id=clean_req_id,
+            claims=claims,
+            provider_dob_calendar=source_cal,
+            expected_details_ref=details_ref,
+            application_user_ref=user_ref,
+            purpose=purpose,
+            expires_at=record.get("expires_at"),
+            identity_authenticated=True,
+        )
+
+    async def get_details_match_result(
+        self,
+        request_id: str,
+        context: Optional[CallerContext] = None,
+    ) -> Optional[DetailsMatchResult]:
+        """Retrieve minimal details match outcome by request_id, enforcing caller ownership and expiry."""
+        clean_req_id = str(request_id).strip()
+        record = await self.results.get_request(clean_req_id)
+        if not record:
+            return None
+
+        ctx = context or CallerContext()
+        self._authorize_caller(record, ctx)
+
+        # Check expiry against UTC clock
+        now = time.time()
+        exp_val = record.get("session_expires_at") or record.get("expires_at")
+        if exp_val:
+            try:
+                exp_ts = float(exp_val)
+            except (ValueError, TypeError):
+                try:
+                    exp_ts = datetime.datetime.fromisoformat(str(exp_val)).timestamp()
+                except Exception:
+                    exp_ts = 0.0
+            if exp_ts > 0 and now >= exp_ts:
+                return None
+
+        # Check in matching_service storage
+        if self.matching_service:
+            res = await self.matching_service.get_match_result(clean_req_id)
+            if res:
+                return res
+
+        # Reconstruct from persisted repository record if finalized
+        status = record.get("status", "pending")
+        if status in ("pending", "initializing", "processing"):
+            return DetailsMatchResult(
+                request_id=clean_req_id,
+                verification_method="esignet",
+                matching_status="pending",
+                matches={},
+                comparison_policy_version=record.get("comparison_policy_version", DEFAULT_COMPARISON_POLICY_VERSION),
+                required_fields=record.get("required_fields", []),
+                checked_at=None,
+                expires_at=str(exp_val) if exp_val else None,
+                identity_authenticated=None,
+            )
+
+        matching_status = record.get("matching_status")
+        if not matching_status:
+            if status == "verified":
+                matching_status = "matched"
+            elif status == "rejected":
+                matching_status = "mismatched"
+            else:
+                matching_status = "unavailable"
+
+        return DetailsMatchResult(
+            request_id=clean_req_id,
+            verification_method="esignet",
+            matching_status=matching_status,
+            matches=record.get("matches", {}),
+            comparison_policy_version=record.get("comparison_policy_version", DEFAULT_COMPARISON_POLICY_VERSION),
+            required_fields=record.get("required_fields", []),
+            checked_at=record.get("checked_at") or record.get("verified_at"),
+            expires_at=str(exp_val) if exp_val else None,
+            reasons=record.get("reasons", {}) if isinstance(record.get("reasons"), dict) else {},
+            identity_authenticated=record.get("identity_authenticated", True if status in ("verified", "rejected") else None),
+            evidence_ref=record.get("evidence_ref") or f"ev_{clean_req_id}",
         )
 

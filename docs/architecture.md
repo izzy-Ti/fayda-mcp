@@ -3,10 +3,12 @@
 ## Delivery Model
 
 `fayda-mcp` is an importable, headless Python library providing:
-1. Typed FastMCP tools and schemas (`start_verification`, `get_verification_status`, `get_verification_result`, `cancel_verification`).
-2. OIDC PKCE generation and private_key_jwt client assertion support.
-3. Cryptographic JWT and JWKS validation for Fayda eSignet.
-4. Pluggable storage protocols for sessions, results, and audit trails.
+1. Typed FastMCP tools and schemas for eSignet OIDC (`start_verification`, `get_verification_status`, `get_verification_result`, `cancel_verification`).
+2. Offline QR verification tools (`submit_qr_verification`, `get_qr_verification_result`).
+3. Citizen Details Matching tools (`start_details_verification`, `get_details_match_result`) with tri-state outcomes and zero demographic leakage.
+4. OIDC PKCE generation and private_key_jwt client assertion support.
+5. Cryptographic JWT and JWKS validation for Fayda eSignet.
+6. Pluggable storage protocols for sessions, results, temporary expected details, and audit trails.
 
 ## Responsibilities
 

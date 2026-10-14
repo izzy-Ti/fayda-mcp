@@ -1,6 +1,6 @@
 """Public request and result schemas for Fayda MCP verification."""
 
-from typing import Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field
 
 VerificationStatusType = Literal[

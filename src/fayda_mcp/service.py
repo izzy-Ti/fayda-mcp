@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import hashlib
 import json
+import os
 import time
 from typing import Any, Dict, List, Optional, Sequence, Union
 import httpx
@@ -35,6 +36,34 @@ def compute_request_fingerprint(
     raw = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
+
+def compute_details_request_fingerprint(
+    purpose: str, application_user_ref: str, expected_details_ref: str
+) -> str:
+    """Generate deterministic SHA-256 fingerprint for details verification requests."""
+    payload = {
+        "purpose": str(purpose),
+        "application_user_ref": str(application_user_ref or ""),
+        "expected_details_ref": str(expected_details_ref or ""),
+        "verification_type": "details_matching",
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+from fayda_mcp.matching.schemas import (
+    DEFAULT_COMPARISON_POLICY_VERSION,
+    DetailsAlreadyBoundError,
+    DetailsCallerMismatchError,
+    DetailsMatchResult,
+    DetailsMatchingError,
+    DetailsMatchingErrorCode,
+    DetailsPurposeMismatchError,
+    DetailsReferenceExpiredError,
+    DetailsReferenceNotFoundError,
+    DetailsUserMismatchError,
+    StartDetailsVerificationResponse,
+)
 from fayda_mcp.policy import VerificationPolicy
 from fayda_mcp.schemas import (
     CancelVerificationResponse,
@@ -86,6 +115,18 @@ class FaydaVerificationService:
             results=self.results,
             audit=self.audit,
             success_hook=qr_success_hook,
+        )
+        from fayda_mcp.matching.service import DetailsMatchingService
+        encryption_key = self.config.details_encryption_key
+        if not encryption_key:
+            encryption_key = os.environ.get("FAYDA_DETAILS_ENCRYPTION_KEY") or os.environ.get("FAYDA_ENCRYPTION_KEY")
+        if not encryption_key and self.config.client_id:
+            encryption_key = f"fayda:details-key:{self.config.client_id}:{self.config.issuer or 'default'}"
+
+        self.matching_service = DetailsMatchingService(
+            policy=self.policy,
+            session_store=self.sessions,
+            encryption_key=encryption_key,
         )
 
     async def __aenter__(self) -> "FaydaVerificationService":
@@ -362,6 +403,296 @@ class FaydaVerificationService:
             expires_at=expires_at,
         )
 
+    async def start_details_verification(
+        self,
+        context: CallerContext,
+        expected_details_ref: str,
+        purpose: str,
+        application_user_ref: str,
+        idempotency_key: str,
+    ) -> StartDetailsVerificationResponse:
+        """Initiate citizen identity verification with bound expected details matching.
+
+        Reuses the existing eSignet authorization flow, resolving the caller-owned
+        expected details reference, binding it to the generated request, and requesting
+        the required OIDC claims (name, birthdate) based on expected details.
+        """
+        clean_ref = str(expected_details_ref or "").strip()
+        clean_purpose = str(purpose or "").strip()
+        clean_user = str(application_user_ref or "").strip()
+        clean_idempotency = str(idempotency_key or "").strip()
+
+        if not clean_ref:
+            raise DetailsReferenceNotFoundError("empty_reference")
+        if not clean_purpose:
+            raise PolicyViolationError("purpose must not be empty")
+        if not clean_user:
+            raise DetailsMatchingError(
+                "application_user_ref must not be empty",
+                DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
+            )
+        if not clean_idempotency:
+            raise DetailsMatchingError(
+                "idempotency_key must not be empty",
+                DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
+            )
+
+        # 1. Resolve and validate the owned expected details reference
+        record = await self.matching_service.get_expected_details_record(
+            ref=clean_ref,
+            context=context,
+            validate_caller=True,
+        )
+
+        # 2. Validate application user & purpose match
+        if record.application_user_ref != clean_user:
+            raise DetailsUserMismatchError(clean_ref)
+        if record.purpose != clean_purpose:
+            raise DetailsPurposeMismatchError(clean_ref)
+
+        # 3. Validate purpose against verification policy
+        self.policy.validate_purpose(clean_purpose)
+
+        # 4. Compute deterministic fingerprint for details verification
+        fingerprint = compute_details_request_fingerprint(
+            purpose=clean_purpose,
+            application_user_ref=clean_user,
+            expected_details_ref=clean_ref,
+        )
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expires_at = (now + datetime.timedelta(seconds=self.config.session_ttl_seconds)).isoformat()
+        request_id = f"vr_{generate_secure_token(16)}"
+
+        # 5. Reserve request through unique insert before initiating OIDC flow
+        reservation_data = {
+            "request_id": request_id,
+            "tenant_id": context.tenant_id,
+            "principal_id": context.principal_id,
+            "application_user_ref": clean_user,
+            "idempotency_key": clean_idempotency,
+            "request_fingerprint": fingerprint,
+            "purpose": clean_purpose,
+            "verification_method": "esignet",
+            "verification_type": "details_matching",
+            "expected_details_ref": clean_ref,
+            "checks": ["identity_verified"],
+            "required_checks": ["identity_verified"],
+            "optional_checks": [],
+            "status": "initializing",
+            "expires_at": expires_at,
+            "policy_version": self.policy.version,
+            "comparison_policy_version": DEFAULT_COMPARISON_POLICY_VERSION,
+        }
+
+        reserved, existing_or_reserved = await self.results.reserve_request(
+            request_id=request_id,
+            data=reservation_data,
+            ttl_seconds=self.config.result_ttl_seconds,
+        )
+
+        if not reserved:
+            # Replay with idempotency key
+            existing_fp = existing_or_reserved.get("request_fingerprint")
+            if existing_fp and existing_fp != fingerprint:
+                raise IdempotencyConflictError(
+                    f"Idempotency key '{clean_idempotency}' has already been used with different parameters"
+                )
+
+            current_rec = existing_or_reserved
+            if current_rec.get("status") == "initializing":
+                for _ in range(40):
+                    await asyncio.sleep(0.05)
+                    poll_rec = await self.results.get_request(current_rec["request_id"])
+                    if poll_rec and poll_rec.get("status") != "initializing":
+                        current_rec = poll_rec
+                        break
+
+            auth_url = ""
+            if current_rec.get("status") == "pending":
+                auth_url = current_rec.get("authorization_url") or current_rec.get("auth_url") or ""
+
+            actual_req_id = current_rec["request_id"]
+            if not auth_url and current_rec.get("status") not in ("verified", "processing"):
+                # Regenerate OIDC session and authorization URL for retry
+                state = generate_secure_token(32)
+                nonce = generate_secure_token(32)
+                code_verifier, code_challenge = generate_pkce_pair()
+
+                scopes, claims_param = self.policy.resolve_details_scopes_and_claims(
+                    record.expected_details
+                )
+                auth_url = build_authorization_url(
+                    config=self.config,
+                    state=state,
+                    nonce=nonce,
+                    code_challenge=code_challenge,
+                    scopes=scopes,
+                    claims=claims_param,
+                )
+                session_data = {
+                    "request_id": actual_req_id,
+                    "tenant_id": context.tenant_id,
+                    "principal_id": context.principal_id,
+                    "application_user_ref": clean_user,
+                    "nonce": nonce,
+                    "code_verifier": code_verifier,
+                    "purpose": clean_purpose,
+                    "verification_method": "esignet",
+                    "verification_type": "details_matching",
+                    "expected_details_ref": clean_ref,
+                    "checks": ["identity_verified"],
+                    "required_checks": ["identity_verified"],
+                    "optional_checks": [],
+                    "expires_at": expires_at,
+                    "browser_binding": context.browser_binding,
+                }
+                try:
+                    await self.sessions.save_session(
+                        state, session_data, ttl_seconds=self.config.session_ttl_seconds
+                    )
+                    pending_record = {
+                        "request_id": actual_req_id,
+                        "tenant_id": context.tenant_id,
+                        "principal_id": context.principal_id,
+                        "application_user_ref": clean_user,
+                        "purpose": clean_purpose,
+                        "verification_method": "esignet",
+                        "verification_type": "details_matching",
+                        "expected_details_ref": clean_ref,
+                        "checks": ["identity_verified"],
+                        "required_checks": ["identity_verified"],
+                        "optional_checks": [],
+                        "status": "pending",
+                        "expires_at": expires_at,
+                        "idempotency_key": clean_idempotency,
+                        "request_fingerprint": fingerprint,
+                        "authorization_url": auth_url,
+                        "policy_version": self.policy.version,
+                        "comparison_policy_version": DEFAULT_COMPARISON_POLICY_VERSION,
+                    }
+                    await self.results.save_request(
+                        actual_req_id, pending_record, ttl_seconds=self.config.result_ttl_seconds
+                    )
+                except Exception:
+                    pass
+
+            exp_str = current_rec.get("expires_at")
+            if not exp_str and current_rec.get("session_expires_at"):
+                try:
+                    exp_str = datetime.datetime.fromtimestamp(
+                        float(current_rec["session_expires_at"]), tz=datetime.timezone.utc
+                    ).isoformat()
+                except Exception:
+                    exp_str = str(current_rec["session_expires_at"])
+
+            return StartDetailsVerificationResponse(
+                request_id=actual_req_id,
+                authorization_url=auth_url,
+                expires_at=exp_str or "",
+            )
+
+        # 6. Reserved new request -> check replay conflict and bind reference
+        actual_req_id = existing_or_reserved.get("request_id", request_id)
+
+        if record.bound_request_id is not None and record.bound_request_id != actual_req_id:
+            await self.results.update_status(actual_req_id, "failed")
+            raise DetailsAlreadyBoundError(clean_ref)
+
+        try:
+            await self.matching_service.bind_expected_details(
+                ref=clean_ref,
+                request_id=actual_req_id,
+                application_user_ref=clean_user,
+                purpose=clean_purpose,
+                context=context,
+            )
+        except Exception:
+            await self.results.update_status(actual_req_id, "failed")
+            raise
+
+        state = generate_secure_token(32)
+        nonce = generate_secure_token(32)
+        code_verifier, code_challenge = generate_pkce_pair()
+
+        scopes, claims_param = self.policy.resolve_details_scopes_and_claims(
+            record.expected_details
+        )
+        auth_url = build_authorization_url(
+            config=self.config,
+            state=state,
+            nonce=nonce,
+            code_challenge=code_challenge,
+            scopes=scopes,
+            claims=claims_param,
+        )
+
+        session_data = {
+            "request_id": actual_req_id,
+            "tenant_id": context.tenant_id,
+            "principal_id": context.principal_id,
+            "application_user_ref": clean_user,
+            "nonce": nonce,
+            "code_verifier": code_verifier,
+            "purpose": clean_purpose,
+            "verification_method": "esignet",
+            "verification_type": "details_matching",
+            "expected_details_ref": clean_ref,
+            "checks": ["identity_verified"],
+            "required_checks": ["identity_verified"],
+            "optional_checks": [],
+            "expires_at": expires_at,
+            "browser_binding": context.browser_binding,
+        }
+
+        try:
+            await self.sessions.save_session(
+                state, session_data, ttl_seconds=self.config.session_ttl_seconds
+            )
+        except Exception as e:
+            await self.results.update_status(actual_req_id, "failed")
+            raise ProviderError(f"Failed to persist verification session in Redis: {e}")
+
+        pending_record = {
+            "request_id": actual_req_id,
+            "tenant_id": context.tenant_id,
+            "principal_id": context.principal_id,
+            "application_user_ref": clean_user,
+            "purpose": clean_purpose,
+            "verification_method": "esignet",
+            "verification_type": "details_matching",
+            "expected_details_ref": clean_ref,
+            "checks": ["identity_verified"],
+            "required_checks": ["identity_verified"],
+            "optional_checks": [],
+            "status": "pending",
+            "expires_at": expires_at,
+            "idempotency_key": clean_idempotency,
+            "request_fingerprint": fingerprint,
+            "authorization_url": auth_url,
+            "policy_version": self.policy.version,
+            "comparison_policy_version": DEFAULT_COMPARISON_POLICY_VERSION,
+        }
+        await self.results.save_request(actual_req_id, pending_record, ttl_seconds=self.config.result_ttl_seconds)
+
+        if self.audit:
+            await self.audit.record_event(
+                "details_verification_started",
+                {
+                    "request_id": actual_req_id,
+                    "tenant_id": context.tenant_id,
+                    "principal_id": context.principal_id,
+                    "purpose": clean_purpose,
+                    "expected_details_ref": clean_ref,
+                },
+            )
+
+        return StartDetailsVerificationResponse(
+            request_id=actual_req_id,
+            authorization_url=auth_url,
+            expires_at=expires_at,
+        )
+
     def _authorize_caller(self, record: Dict[str, Any], context: CallerContext) -> None:
         """Enforce tenant and caller principal isolation."""
         if record.get("tenant_id") != context.tenant_id:
@@ -592,6 +923,35 @@ class FaydaVerificationService:
                 checks,
                 pred_ctx,
             )
+
+            # Details matching in callback: compare permitted claims before discarding raw claims (Task 07)
+            details_match_result: Optional[DetailsMatchResult] = None
+            is_details_flow = (
+                session_data.get("verification_type") == "details_matching"
+                or record.get("verification_type") == "details_matching"
+                or bool(session_data.get("expected_details_ref"))
+                or bool(record.get("expected_details_ref"))
+            )
+            if is_details_flow and self.matching_service:
+                details_ref = session_data.get("expected_details_ref") or record.get("expected_details_ref")
+                user_ref = session_data.get("application_user_ref") or record.get("application_user_ref")
+                req_purpose = session_data.get("purpose") or record.get("purpose")
+                details_match_result = await self.matching_service.evaluate_details_for_request(
+                    request_id=request_id,
+                    claims=raw_all_claims,
+                    provider_dob_calendar=source_cal,
+                    expected_details_ref=details_ref,
+                    application_user_ref=user_ref,
+                    purpose=req_purpose,
+                    expires_at=record.get("expires_at"),
+                    identity_authenticated=True,
+                )
+
+            # Strictly discard raw citizen claims from memory immediately
+            raw_all_claims.clear()
+            id_claims.clear()
+            userinfo_claims.clear()
+            normalized.clear()
         else:
             raise ConfigurationError(
                 "A Fayda signing key is required for verification."
@@ -628,6 +988,21 @@ class FaydaVerificationService:
                 if c in required_set:
                     missing_required = True
 
+        # Apply details matching outcome to verification checks
+        if is_details_flow and details_match_result:
+            result_reasons.update(details_match_result.reasons)
+            if details_match_result.matching_status == "matched":
+                result_checks["identity_verified"] = True
+                result_checks["details_matched"] = True
+            elif details_match_result.matching_status == "mismatched":
+                result_checks["identity_verified"] = True
+                result_checks["details_matched"] = False
+                has_rejection = True
+            else:
+                result_checks["identity_verified"] = True
+                result_checks["details_matched"] = None
+                missing_required = True
+
         # Determine outcome status
         if has_rejection:
             outcome_status = "rejected"
@@ -655,10 +1030,26 @@ class FaydaVerificationService:
             policy_version=self.policy.version,
         )
 
-        audit_payload = {
-            "event_type": "verification_completed",
-            "metadata": {"status": outcome_status},
-        }
+        if is_details_flow and details_match_result:
+            audit_payload = {
+                "event_type": "verification_completed",
+                "metadata": {
+                    "status": outcome_status,
+                    "verification_type": "details_matching",
+                    "matching_status": details_match_result.matching_status,
+                    "comparison_policy_version": details_match_result.comparison_policy_version,
+                    "evidence_ref": f"ev_{request_id}",
+                    "checked_at": details_match_result.checked_at,
+                },
+            }
+        else:
+            audit_payload = {
+                "event_type": "verification_completed",
+                "metadata": {
+                    "status": outcome_status,
+                    "verification_type": "standard",
+                },
+            }
 
         # Atomically finalize to ensure concurrent callbacks cannot finalize twice
         finalized = await self.results.finalize_result(
@@ -669,6 +1060,41 @@ class FaydaVerificationService:
         )
         if not finalized:
             raise InvalidStateError("Verification request has already been finalized or cancelled")
+
+        if is_details_flow and details_match_result:
+            # Persist minimal match outcomes on the request record
+            details_record_data = {
+                "verification_type": "details_matching",
+                "matching_status": details_match_result.matching_status,
+                "matches": details_match_result.matches,
+                "comparison_policy_version": details_match_result.comparison_policy_version,
+                "required_fields": details_match_result.required_fields,
+                "checked_at": details_match_result.checked_at,
+                "identity_authenticated": details_match_result.identity_authenticated,
+                "evidence_ref": f"ev_{request_id}",
+                "reasons": {**result_reasons, **details_match_result.reasons},
+            }
+            try:
+                await self.results.save_request(
+                    request_id,
+                    {**record, **details_record_data, "status": outcome_status},
+                    ttl_seconds=self.config.result_ttl_seconds,
+                )
+            except Exception:
+                pass
+
+            # Task 08: Purge expected details afterward (discard temporary retained demographics)
+            if self.matching_service:
+                details_ref = session_data.get("expected_details_ref") or record.get("expected_details_ref")
+                if details_ref:
+                    try:
+                        await self.matching_service.purge_expected_details(details_ref)
+                    except Exception:
+                        pass
+                try:
+                    await self.matching_service.purge_bound_expected_details_for_request(request_id)
+                except Exception:
+                    pass
 
         if self.audit:
             await self.audit.record_event(
@@ -720,3 +1146,179 @@ class FaydaVerificationService:
             context=context,
             filter_output=filter_output,
         )
+
+    async def submit_expected_details(
+        self,
+        application_user_ref: str,
+        purpose: str,
+        expected_details: Union[Any, Dict[str, Any]],
+        context: Optional[CallerContext] = None,
+        ttl_seconds: int = 900,
+    ) -> Any:
+        """Submit expected identity details from an authenticated host backend and obtain an opaque reference.
+
+        Args:
+            application_user_ref: Host application user identifier to bind.
+            purpose: Approved business purpose for verification (e.g. 'onboarding', 'kyc').
+            expected_details: Expected citizen details (full_name and/or date_of_birth).
+            context: Authenticated CallerContext identifying caller principal and tenant.
+            ttl_seconds: Time-to-live for the expected details record (default: 900s).
+
+        Returns:
+            ExpectedDetailsSubmissionResponse containing opaque expected_details_ref and expiry.
+        """
+        return await self.matching_service.submit_expected_details(
+            application_user_ref=application_user_ref,
+            purpose=purpose,
+            expected_details=expected_details,
+            context=context,
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def get_expected_details_record(
+        self,
+        ref: str,
+        context: Optional[CallerContext] = None,
+        validate_caller: bool = True,
+    ) -> Any:
+        """Retrieve an expected details record by reference, verifying caller ownership."""
+        return await self.matching_service.get_expected_details_record(
+            ref=ref,
+            context=context,
+            validate_caller=validate_caller,
+        )
+
+    async def bind_expected_details(
+        self,
+        ref: str,
+        request_id: str,
+        application_user_ref: str,
+        purpose: str,
+        context: Optional[CallerContext] = None,
+    ) -> Any:
+        """Bind an expected details reference to a verification request, user, and purpose."""
+        return await self.matching_service.bind_expected_details(
+            ref=ref,
+            request_id=request_id,
+            application_user_ref=application_user_ref,
+            purpose=purpose,
+            context=context,
+        )
+
+    async def get_bound_expected_details_for_request(
+        self,
+        request_id: str,
+        context: Optional[CallerContext] = None,
+        validate_caller: bool = True,
+    ) -> Any:
+        """Retrieve the bound expected details record for an active verification request."""
+        return await self.matching_service.get_bound_expected_details_for_request(
+            request_id=request_id,
+            context=context,
+            validate_caller=validate_caller,
+        )
+
+    async def evaluate_details_matching_for_request(
+        self,
+        request_id: str,
+        claims: Dict[str, Any],
+        context: Optional[CallerContext] = None,
+        provider_dob_calendar: Optional[str] = None,
+    ) -> DetailsMatchResult:
+        """Run details matching for a request against permitted claims."""
+        clean_req_id = str(request_id).strip()
+        record = await self.results.get_request(clean_req_id)
+        if not record:
+            raise VerificationNotFoundError(f"Verification request '{clean_req_id}' not found")
+
+        if context is not None:
+            self._authorize_caller(record, context)
+
+        source_cal = provider_dob_calendar or getattr(self.config, "dob_source_calendar", "gregorian")
+        details_ref = record.get("expected_details_ref")
+        user_ref = record.get("application_user_ref")
+        purpose = record.get("purpose")
+
+        return await self.matching_service.evaluate_details_for_request(
+            request_id=clean_req_id,
+            claims=claims,
+            provider_dob_calendar=source_cal,
+            expected_details_ref=details_ref,
+            application_user_ref=user_ref,
+            purpose=purpose,
+            expires_at=record.get("expires_at"),
+            identity_authenticated=True,
+        )
+
+    async def get_details_match_result(
+        self,
+        request_id: str,
+        context: Optional[CallerContext] = None,
+    ) -> Optional[DetailsMatchResult]:
+        """Retrieve minimal details match outcome by request_id, enforcing caller ownership and expiry."""
+        clean_req_id = str(request_id).strip()
+        record = await self.results.get_request(clean_req_id)
+        if not record:
+            return None
+
+        ctx = context or CallerContext()
+        self._authorize_caller(record, ctx)
+
+        # Check expiry against UTC clock
+        now = time.time()
+        exp_val = record.get("session_expires_at") or record.get("expires_at")
+        if exp_val:
+            try:
+                exp_ts = float(exp_val)
+            except (ValueError, TypeError):
+                try:
+                    exp_ts = datetime.datetime.fromisoformat(str(exp_val)).timestamp()
+                except Exception:
+                    exp_ts = 0.0
+            if exp_ts > 0 and now >= exp_ts:
+                return None
+
+        # Check in matching_service storage
+        if self.matching_service:
+            res = await self.matching_service.get_match_result(clean_req_id)
+            if res:
+                return res
+
+        # Reconstruct from persisted repository record if finalized
+        status = record.get("status", "pending")
+        if status in ("pending", "initializing", "processing"):
+            return DetailsMatchResult(
+                request_id=clean_req_id,
+                verification_method="esignet",
+                matching_status="pending",
+                matches={},
+                comparison_policy_version=record.get("comparison_policy_version", DEFAULT_COMPARISON_POLICY_VERSION),
+                required_fields=record.get("required_fields", []),
+                checked_at=None,
+                expires_at=str(exp_val) if exp_val else None,
+                identity_authenticated=None,
+            )
+
+        matching_status = record.get("matching_status")
+        if not matching_status:
+            if status == "verified":
+                matching_status = "matched"
+            elif status == "rejected":
+                matching_status = "mismatched"
+            else:
+                matching_status = "unavailable"
+
+        return DetailsMatchResult(
+            request_id=clean_req_id,
+            verification_method="esignet",
+            matching_status=matching_status,
+            matches=record.get("matches", {}),
+            comparison_policy_version=record.get("comparison_policy_version", DEFAULT_COMPARISON_POLICY_VERSION),
+            required_fields=record.get("required_fields", []),
+            checked_at=record.get("checked_at") or record.get("verified_at"),
+            expires_at=str(exp_val) if exp_val else None,
+            reasons=record.get("reasons", {}) if isinstance(record.get("reasons"), dict) else {},
+            identity_authenticated=record.get("identity_authenticated", True if status in ("verified", "rejected") else None),
+            evidence_ref=record.get("evidence_ref") or f"ev_{clean_req_id}",
+        )
+

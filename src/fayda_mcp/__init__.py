@@ -40,6 +40,19 @@ from fayda_mcp.schemas import (
     VerificationResult,
     VerificationStatusResponse,
 )
+from fayda_mcp.matching import (
+    DEFAULT_COMPARISON_POLICY_VERSION,
+    DetailsMatchResult,
+    DetailsMatchingError,
+    ExpectedDetails,
+    ExpectedDetailsRecord,
+    ExpectedDetailsSubmission,
+    ExpectedDetailsSubmissionResponse,
+    FieldMatchOutcome,
+    MatchingStatus,
+    StartDetailsVerificationRequest,
+    StartDetailsVerificationResponse,
+)
 from fayda_mcp.service import FaydaVerificationService
 from fayda_mcp.mcp.factory import create_mcp_server
 
@@ -77,4 +90,15 @@ __all__ = [
     "CancelVerificationResponse",
     "FaydaVerificationService",
     "create_mcp_server",
+    "DEFAULT_COMPARISON_POLICY_VERSION",
+    "FieldMatchOutcome",
+    "MatchingStatus",
+    "DetailsMatchingError",
+    "ExpectedDetails",
+    "ExpectedDetailsSubmission",
+    "ExpectedDetailsSubmissionResponse",
+    "ExpectedDetailsRecord",
+    "StartDetailsVerificationRequest",
+    "StartDetailsVerificationResponse",
+    "DetailsMatchResult",
 ]

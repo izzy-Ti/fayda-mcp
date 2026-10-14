@@ -1023,13 +1023,26 @@ class FaydaVerificationService:
             policy_version=self.policy.version,
         )
 
-        audit_payload = {
-            "event_type": "verification_completed",
-            "metadata": {
-                "status": outcome_status,
-                "verification_type": "details_matching" if is_details_flow else "standard",
-            },
-        }
+        if is_details_flow and details_match_result:
+            audit_payload = {
+                "event_type": "verification_completed",
+                "metadata": {
+                    "status": outcome_status,
+                    "verification_type": "details_matching",
+                    "matching_status": details_match_result.matching_status,
+                    "comparison_policy_version": details_match_result.comparison_policy_version,
+                    "evidence_ref": f"ev_{request_id}",
+                    "checked_at": details_match_result.checked_at,
+                },
+            }
+        else:
+            audit_payload = {
+                "event_type": "verification_completed",
+                "metadata": {
+                    "status": outcome_status,
+                    "verification_type": "standard",
+                },
+            }
 
         # Atomically finalize to ensure concurrent callbacks cannot finalize twice
         finalized = await self.results.finalize_result(
@@ -1051,7 +1064,8 @@ class FaydaVerificationService:
                 "required_fields": details_match_result.required_fields,
                 "checked_at": details_match_result.checked_at,
                 "identity_authenticated": details_match_result.identity_authenticated,
-                "details_reasons": details_match_result.reasons,
+                "evidence_ref": f"ev_{request_id}",
+                "reasons": {**result_reasons, **details_match_result.reasons},
             }
             try:
                 await self.results.save_request(
@@ -1061,6 +1075,19 @@ class FaydaVerificationService:
                 )
             except Exception:
                 pass
+
+            # Task 08: Purge expected details afterward (discard temporary retained demographics)
+            if self.matching_service:
+                details_ref = session_data.get("expected_details_ref") or record.get("expected_details_ref")
+                if details_ref:
+                    try:
+                        await self.matching_service.purge_expected_details(details_ref)
+                    except Exception:
+                        pass
+                try:
+                    await self.matching_service.purge_bound_expected_details_for_request(request_id)
+                except Exception:
+                    pass
 
         if self.audit:
             await self.audit.record_event(

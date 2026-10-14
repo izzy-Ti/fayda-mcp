@@ -198,6 +198,18 @@ class MemoryResultRepository:
                 data["policy_version"] = result.policy_version
             if hasattr(result, "credential_signature_valid"):
                 data["credential_signature_valid"] = result.credential_signature_valid
+            if hasattr(result, "matching_status") and result.matching_status is not None:
+                data["matching_status"] = result.matching_status
+            if hasattr(result, "matches") and result.matches is not None:
+                data["matches"] = result.matches
+            if hasattr(result, "comparison_policy_version") and result.comparison_policy_version is not None:
+                data["comparison_policy_version"] = result.comparison_policy_version
+            if hasattr(result, "required_fields") and result.required_fields is not None:
+                data["required_fields"] = result.required_fields
+            if hasattr(result, "checked_at") and result.checked_at is not None:
+                data["checked_at"] = result.checked_at
+            if hasattr(result, "identity_authenticated") and result.identity_authenticated is not None:
+                data["identity_authenticated"] = result.identity_authenticated
 
             data.pop("authorization_url", None)
             data.pop("auth_url", None)

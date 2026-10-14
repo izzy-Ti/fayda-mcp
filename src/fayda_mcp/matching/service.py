@@ -293,7 +293,15 @@ class DetailsMatchingService:
 
     async def purge_expected_details(self, ref: str) -> bool:
         """Purge expected details record after matching is finalized."""
-        return await self.store.delete_expected_details(ref)
+        return await self.store.delete_expected_details(str(ref).strip())
+
+    async def purge_bound_expected_details_for_request(self, request_id: str) -> bool:
+        """Purge bound expected details record for a verification request after finalization."""
+        clean_request_id = str(request_id).strip()
+        ref = await self.store.get_ref_by_request_id(clean_request_id)
+        if ref:
+            return await self.store.delete_expected_details(ref)
+        return False
 
     async def evaluate_details_for_request(
         self,

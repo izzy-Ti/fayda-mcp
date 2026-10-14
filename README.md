@@ -9,6 +9,7 @@ An importable, headless Python library providing Model Context Protocol (MCP) to
 
 - **Explicit FastMCP Tools**:
   - eSignet OIDC: `start_verification`, `get_verification_status`, `get_verification_result`, `cancel_verification`.
+  - Citizen Details Matching: `start_details_verification`, `get_details_match_result`.
   - Offline QR Code: `submit_qr_verification`, `get_qr_verification_result`.
   - Policy & Health: `list_allowed_checks`, `list_verification_purposes`, `check_service_health`.
 - **Zero Raw Demographic / Biometric Leaks**: Outputs minimal boolean predicates (`identity_verified`, `age_over_18`, `credential_signature_valid`), strictly forbidding citizen biometrics, OTPs, or demographic dumps from entering LLM contexts.
@@ -104,6 +105,48 @@ if __name__ == "__main__":
 
 ---
 
+## Quick Start (Citizen Details Matching)
+
+```python
+from fayda_mcp import FaydaConfig, FaydaVerificationService
+from fayda_mcp.matching.schemas import ExpectedDetails
+from fayda_mcp.storage.memory import MemoryResultRepository, MemorySessionStore
+
+# 1. Initialize service with pluggable session and result repositories
+service = FaydaVerificationService(
+    config=FaydaConfig.sandbox(client_id="rp_client", redirect_uri="http://localhost:8000/callback"),
+    sessions=MemorySessionStore(),
+    results=MemoryResultRepository(),
+)
+
+# 2. Authenticated backend submits citizen expected details (AES-256-GCM encrypted at rest)
+sub = await service.submit_expected_details(
+    application_user_ref="cust_1001",
+    purpose="onboarding",
+    expected_details=ExpectedDetails(
+        full_name="Abebe Bikila",
+        date_of_birth="1995/04/12",
+        dob_calendar="gregorian",
+    ),
+    ttl_seconds=900,
+)
+
+# 3. Agent launches verification using the opaque reference token
+start = await service.start_details_verification(
+    expected_details_ref=sub.expected_details_ref,
+    purpose="onboarding",
+    application_user_ref="cust_1001",
+)
+
+# 4. After citizen authenticates via eSignet callback, query minimal match outcome
+result = await service.get_details_match_result(start.request_id)
+# Returns tri-state flags; zero raw demographics, DOBs, or tokens leaked!
+print(result.matching_status)  # "matched" | "mismatched" | "unavailable"
+print(result.matches)          # {"full_name": True, "date_of_birth": True}
+```
+
+---
+
 ## Running the Complete Sandbox Flow
 
 Run the included standalone sandbox walkthrough:
@@ -127,6 +170,7 @@ This runs the entire end-to-end lifecycle (starts verification -> builds authori
 
 ## Documentation
 
+- [Citizen Details Matching Specification (details-v1)](docs/details_matching.md)
 - [Production, Compatibility & Operations Guide](docs/production_guide.md)
 - [QR Credential Profile Specification](docs/qr_profile.md)
 - [QR Signed Content & Byte Rules](docs/signed_content.md)

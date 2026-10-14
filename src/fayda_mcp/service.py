@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import hashlib
 import json
+import os
 import time
 from typing import Any, Dict, List, Optional, Sequence, Union
 import httpx
@@ -116,10 +117,16 @@ class FaydaVerificationService:
             success_hook=qr_success_hook,
         )
         from fayda_mcp.matching.service import DetailsMatchingService
+        encryption_key = self.config.details_encryption_key
+        if not encryption_key:
+            encryption_key = os.environ.get("FAYDA_DETAILS_ENCRYPTION_KEY") or os.environ.get("FAYDA_ENCRYPTION_KEY")
+        if not encryption_key and self.config.client_id:
+            encryption_key = f"fayda:details-key:{self.config.client_id}:{self.config.issuer or 'default'}"
+
         self.matching_service = DetailsMatchingService(
             policy=self.policy,
             session_store=self.sessions,
-            encryption_key=self.config.details_encryption_key,
+            encryption_key=encryption_key,
         )
 
     async def __aenter__(self) -> "FaydaVerificationService":

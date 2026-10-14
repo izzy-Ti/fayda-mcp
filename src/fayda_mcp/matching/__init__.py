@@ -17,6 +17,18 @@ from fayda_mcp.matching.crypto import (
     DetailsEncryptor,
     derive_encryption_key,
 )
+from fayda_mcp.matching.normalization import (
+    REASON_DOB_MISMATCH,
+    REASON_INVALID_DATE_FORMAT,
+    REASON_NAME_MISMATCH,
+    REASON_PARTIAL_DOB_UNAVAILABLE,
+    compare_dates,
+    compare_names,
+    evaluate_details_matching,
+    is_partial_date,
+    normalize_and_convert_date,
+    normalize_name,
+)
 from fayda_mcp.matching.schemas import (
     DEFAULT_COMPARISON_POLICY_VERSION,
     DEFAULT_EXPECTED_DETAILS_TTL_SECONDS,
@@ -95,7 +107,17 @@ __all__ = [
     "REASON_PROVIDER_CLAIM_UNAVAILABLE",
     "REASON_UNSUPPORTED_FIELD",
     "REASON_UNAUTHENTICATED",
+    "REASON_NAME_MISMATCH",
+    "REASON_DOB_MISMATCH",
+    "REASON_PARTIAL_DOB_UNAVAILABLE",
+    "REASON_INVALID_DATE_FORMAT",
     "resolve_details_matching_scopes_and_claims",
     "extract_approved_matching_claims",
     "evaluate_initial_availability",
+    "normalize_name",
+    "compare_names",
+    "is_partial_date",
+    "normalize_and_convert_date",
+    "compare_dates",
+    "evaluate_details_matching",
 ]

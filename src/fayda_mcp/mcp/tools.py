@@ -17,6 +17,7 @@ from fayda_mcp.qr.schemas import (
     QRVerificationResult,
     filter_agent_output,
 )
+from fayda_mcp.matching.schemas import StartDetailsVerificationResponse
 from fayda_mcp.schemas import (
     CancelVerificationResponse,
     StartVerificationResponse,
@@ -81,6 +82,43 @@ def register_tools(
             context=ctx,
             purpose=purpose,
             checks=checks,
+            application_user_ref=application_user_ref,
+            idempotency_key=idempotency_key,
+        )
+
+    @server.tool()
+    async def start_details_verification(
+        expected_details_ref: str,
+        purpose: str,
+        application_user_ref: str,
+        idempotency_key: str,
+    ) -> StartDetailsVerificationResponse:
+        """Initiate citizen identity verification with bound expected details matching.
+
+        Resolves caller-owned expected details reference, binds it to the verification
+        request, and returns the eSignet authorization URL for citizen consent.
+
+        Args:
+            expected_details_ref: Opaque reference to expected details created by host backend.
+            purpose: Approved business purpose for verification (e.g. 'onboarding', 'kyc').
+            application_user_ref: Opaque host application reference for the user.
+            idempotency_key: Unique caller key preventing duplicate starts.
+        """
+        ctx = await adapter.resolve_context(
+            "start_details_verification",
+            expected_details_ref=expected_details_ref,
+            purpose=purpose,
+            application_user_ref=application_user_ref,
+            idempotency_key=idempotency_key,
+        )
+        allowed = await adapter.authorize(ctx, "verification:create", None)
+        if not allowed:
+            raise AuthorizationError(f"Caller '{ctx.principal_id}' denied authorization for 'verification:create'")
+
+        return await service.start_details_verification(
+            context=ctx,
+            expected_details_ref=expected_details_ref,
+            purpose=purpose,
             application_user_ref=application_user_ref,
             idempotency_key=idempotency_key,
         )

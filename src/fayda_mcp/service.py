@@ -35,6 +35,33 @@ def compute_request_fingerprint(
     raw = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
+
+def compute_details_request_fingerprint(
+    purpose: str, application_user_ref: str, expected_details_ref: str
+) -> str:
+    """Generate deterministic SHA-256 fingerprint for details verification requests."""
+    payload = {
+        "purpose": str(purpose),
+        "application_user_ref": str(application_user_ref or ""),
+        "expected_details_ref": str(expected_details_ref or ""),
+        "verification_type": "details_matching",
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+from fayda_mcp.matching.schemas import (
+    DEFAULT_COMPARISON_POLICY_VERSION,
+    DetailsAlreadyBoundError,
+    DetailsCallerMismatchError,
+    DetailsMatchingError,
+    DetailsMatchingErrorCode,
+    DetailsPurposeMismatchError,
+    DetailsReferenceExpiredError,
+    DetailsReferenceNotFoundError,
+    DetailsUserMismatchError,
+    StartDetailsVerificationResponse,
+)
 from fayda_mcp.policy import VerificationPolicy
 from fayda_mcp.schemas import (
     CancelVerificationResponse,
@@ -363,6 +390,304 @@ class FaydaVerificationService:
             )
 
         return StartVerificationResponse(
+            request_id=actual_req_id,
+            authorization_url=auth_url,
+            expires_at=expires_at,
+        )
+
+    async def start_details_verification(
+        self,
+        context: CallerContext,
+        expected_details_ref: str,
+        purpose: str,
+        application_user_ref: str,
+        idempotency_key: str,
+    ) -> StartDetailsVerificationResponse:
+        """Initiate citizen identity verification with bound expected details matching.
+
+        Reuses the existing eSignet authorization flow, resolving the caller-owned
+        expected details reference, binding it to the generated request, and requesting
+        the required OIDC claims (name, birthdate) based on expected details.
+        """
+        clean_ref = str(expected_details_ref or "").strip()
+        clean_purpose = str(purpose or "").strip()
+        clean_user = str(application_user_ref or "").strip()
+        clean_idempotency = str(idempotency_key or "").strip()
+
+        if not clean_ref:
+            raise DetailsReferenceNotFoundError("empty_reference")
+        if not clean_purpose:
+            raise PolicyViolationError("purpose must not be empty")
+        if not clean_user:
+            raise DetailsMatchingError(
+                "application_user_ref must not be empty",
+                DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
+            )
+        if not clean_idempotency:
+            raise DetailsMatchingError(
+                "idempotency_key must not be empty",
+                DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
+            )
+
+        # 1. Resolve and validate the owned expected details reference
+        record = await self.matching_service.get_expected_details_record(
+            ref=clean_ref,
+            context=context,
+            validate_caller=True,
+        )
+
+        # 2. Validate application user & purpose match
+        if record.application_user_ref != clean_user:
+            raise DetailsUserMismatchError(clean_ref)
+        if record.purpose != clean_purpose:
+            raise DetailsPurposeMismatchError(clean_ref)
+
+        # 3. Validate purpose against verification policy
+        self.policy.validate_purpose(clean_purpose)
+
+        # 4. Compute deterministic fingerprint for details verification
+        fingerprint = compute_details_request_fingerprint(
+            purpose=clean_purpose,
+            application_user_ref=clean_user,
+            expected_details_ref=clean_ref,
+        )
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expires_at = (now + datetime.timedelta(seconds=self.config.session_ttl_seconds)).isoformat()
+        request_id = f"vr_{generate_secure_token(16)}"
+
+        # 5. Reserve request through unique insert before initiating OIDC flow
+        reservation_data = {
+            "request_id": request_id,
+            "tenant_id": context.tenant_id,
+            "principal_id": context.principal_id,
+            "application_user_ref": clean_user,
+            "idempotency_key": clean_idempotency,
+            "request_fingerprint": fingerprint,
+            "purpose": clean_purpose,
+            "verification_method": "esignet",
+            "verification_type": "details_matching",
+            "expected_details_ref": clean_ref,
+            "checks": ["identity_verified"],
+            "required_checks": ["identity_verified"],
+            "optional_checks": [],
+            "status": "initializing",
+            "expires_at": expires_at,
+            "policy_version": self.policy.version,
+            "comparison_policy_version": DEFAULT_COMPARISON_POLICY_VERSION,
+        }
+
+        reserved, existing_or_reserved = await self.results.reserve_request(
+            request_id=request_id,
+            data=reservation_data,
+            ttl_seconds=self.config.result_ttl_seconds,
+        )
+
+        if not reserved:
+            # Replay with idempotency key
+            existing_fp = existing_or_reserved.get("request_fingerprint")
+            if existing_fp and existing_fp != fingerprint:
+                raise IdempotencyConflictError(
+                    f"Idempotency key '{clean_idempotency}' has already been used with different parameters"
+                )
+
+            current_rec = existing_or_reserved
+            if current_rec.get("status") == "initializing":
+                for _ in range(40):
+                    await asyncio.sleep(0.05)
+                    poll_rec = await self.results.get_request(current_rec["request_id"])
+                    if poll_rec and poll_rec.get("status") != "initializing":
+                        current_rec = poll_rec
+                        break
+
+            auth_url = ""
+            if current_rec.get("status") == "pending":
+                auth_url = current_rec.get("authorization_url") or current_rec.get("auth_url") or ""
+
+            actual_req_id = current_rec["request_id"]
+            if not auth_url and current_rec.get("status") not in ("verified", "processing"):
+                # Regenerate OIDC session and authorization URL for retry
+                state = generate_secure_token(32)
+                nonce = generate_secure_token(32)
+                code_verifier, code_challenge = generate_pkce_pair()
+
+                userinfo_claims: Dict[str, Any] = {"sub": {"essential": True}}
+                if record.expected_details and record.expected_details.full_name:
+                    userinfo_claims["name"] = {"essential": True}
+                if record.expected_details and record.expected_details.date_of_birth:
+                    userinfo_claims["birthdate"] = {"essential": True}
+
+                claims_param = {"userinfo": userinfo_claims}
+                auth_url = build_authorization_url(
+                    config=self.config,
+                    state=state,
+                    nonce=nonce,
+                    code_challenge=code_challenge,
+                    scopes=["openid", "profile"],
+                    claims=claims_param,
+                )
+                session_data = {
+                    "request_id": actual_req_id,
+                    "tenant_id": context.tenant_id,
+                    "principal_id": context.principal_id,
+                    "application_user_ref": clean_user,
+                    "nonce": nonce,
+                    "code_verifier": code_verifier,
+                    "purpose": clean_purpose,
+                    "verification_method": "esignet",
+                    "verification_type": "details_matching",
+                    "expected_details_ref": clean_ref,
+                    "checks": ["identity_verified"],
+                    "required_checks": ["identity_verified"],
+                    "optional_checks": [],
+                    "expires_at": expires_at,
+                    "browser_binding": context.browser_binding,
+                }
+                try:
+                    await self.sessions.save_session(
+                        state, session_data, ttl_seconds=self.config.session_ttl_seconds
+                    )
+                    pending_record = {
+                        "request_id": actual_req_id,
+                        "tenant_id": context.tenant_id,
+                        "principal_id": context.principal_id,
+                        "application_user_ref": clean_user,
+                        "purpose": clean_purpose,
+                        "verification_method": "esignet",
+                        "verification_type": "details_matching",
+                        "expected_details_ref": clean_ref,
+                        "checks": ["identity_verified"],
+                        "required_checks": ["identity_verified"],
+                        "optional_checks": [],
+                        "status": "pending",
+                        "expires_at": expires_at,
+                        "idempotency_key": clean_idempotency,
+                        "request_fingerprint": fingerprint,
+                        "authorization_url": auth_url,
+                        "policy_version": self.policy.version,
+                        "comparison_policy_version": DEFAULT_COMPARISON_POLICY_VERSION,
+                    }
+                    await self.results.save_request(
+                        actual_req_id, pending_record, ttl_seconds=self.config.result_ttl_seconds
+                    )
+                except Exception:
+                    pass
+
+            exp_str = current_rec.get("expires_at")
+            if not exp_str and current_rec.get("session_expires_at"):
+                try:
+                    exp_str = datetime.datetime.fromtimestamp(
+                        float(current_rec["session_expires_at"]), tz=datetime.timezone.utc
+                    ).isoformat()
+                except Exception:
+                    exp_str = str(current_rec["session_expires_at"])
+
+            return StartDetailsVerificationResponse(
+                request_id=actual_req_id,
+                authorization_url=auth_url,
+                expires_at=exp_str or "",
+            )
+
+        # 6. Reserved new request -> check replay conflict and bind reference
+        actual_req_id = existing_or_reserved.get("request_id", request_id)
+
+        if record.bound_request_id is not None and record.bound_request_id != actual_req_id:
+            await self.results.update_status(actual_req_id, "failed")
+            raise DetailsAlreadyBoundError(clean_ref)
+
+        try:
+            await self.matching_service.bind_expected_details(
+                ref=clean_ref,
+                request_id=actual_req_id,
+                application_user_ref=clean_user,
+                purpose=clean_purpose,
+                context=context,
+            )
+        except Exception:
+            await self.results.update_status(actual_req_id, "failed")
+            raise
+
+        state = generate_secure_token(32)
+        nonce = generate_secure_token(32)
+        code_verifier, code_challenge = generate_pkce_pair()
+
+        userinfo_claims: Dict[str, Any] = {"sub": {"essential": True}}
+        if record.expected_details and record.expected_details.full_name:
+            userinfo_claims["name"] = {"essential": True}
+        if record.expected_details and record.expected_details.date_of_birth:
+            userinfo_claims["birthdate"] = {"essential": True}
+
+        claims_param = {"userinfo": userinfo_claims}
+        auth_url = build_authorization_url(
+            config=self.config,
+            state=state,
+            nonce=nonce,
+            code_challenge=code_challenge,
+            scopes=["openid", "profile"],
+            claims=claims_param,
+        )
+
+        session_data = {
+            "request_id": actual_req_id,
+            "tenant_id": context.tenant_id,
+            "principal_id": context.principal_id,
+            "application_user_ref": clean_user,
+            "nonce": nonce,
+            "code_verifier": code_verifier,
+            "purpose": clean_purpose,
+            "verification_method": "esignet",
+            "verification_type": "details_matching",
+            "expected_details_ref": clean_ref,
+            "checks": ["identity_verified"],
+            "required_checks": ["identity_verified"],
+            "optional_checks": [],
+            "expires_at": expires_at,
+            "browser_binding": context.browser_binding,
+        }
+
+        try:
+            await self.sessions.save_session(
+                state, session_data, ttl_seconds=self.config.session_ttl_seconds
+            )
+        except Exception as e:
+            await self.results.update_status(actual_req_id, "failed")
+            raise ProviderError(f"Failed to persist verification session in Redis: {e}")
+
+        pending_record = {
+            "request_id": actual_req_id,
+            "tenant_id": context.tenant_id,
+            "principal_id": context.principal_id,
+            "application_user_ref": clean_user,
+            "purpose": clean_purpose,
+            "verification_method": "esignet",
+            "verification_type": "details_matching",
+            "expected_details_ref": clean_ref,
+            "checks": ["identity_verified"],
+            "required_checks": ["identity_verified"],
+            "optional_checks": [],
+            "status": "pending",
+            "expires_at": expires_at,
+            "idempotency_key": clean_idempotency,
+            "request_fingerprint": fingerprint,
+            "authorization_url": auth_url,
+            "policy_version": self.policy.version,
+            "comparison_policy_version": DEFAULT_COMPARISON_POLICY_VERSION,
+        }
+        await self.results.save_request(actual_req_id, pending_record, ttl_seconds=self.config.result_ttl_seconds)
+
+        if self.audit:
+            await self.audit.record_event(
+                "details_verification_started",
+                {
+                    "request_id": actual_req_id,
+                    "tenant_id": context.tenant_id,
+                    "principal_id": context.principal_id,
+                    "purpose": clean_purpose,
+                    "expected_details_ref": clean_ref,
+                },
+            )
+
+        return StartDetailsVerificationResponse(
             request_id=actual_req_id,
             authorization_url=auth_url,
             expires_at=expires_at,

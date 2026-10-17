@@ -10,6 +10,34 @@ from typing import Any, Dict, List, Literal, Optional, Set, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from fayda_mcp.exceptions import FaydaMCPError
+from fayda_mcp.matching.profiles import (
+    DEFAULT_MATCHING_PROFILE,
+    DEFAULT_NAME_MATCHING_LANGUAGE,
+    LANGUAGE_AMHARIC,
+    LANGUAGE_ENGLISH,
+    METHOD_APPROVED_VARIATION,
+    METHOD_EXACT_NORMALIZED,
+    METHOD_PHONETIC,
+    METHOD_TRANSLITERATION,
+    NAME_MATCH_APPROVED_EQUIVALENT,
+    NAME_MATCH_EXACT,
+    NAME_MATCH_MISMATCH,
+    NAME_MATCH_REVIEW_REQUIRED,
+    NAME_MATCH_UNAVAILABLE,
+    PROFILE_ETHIOPIAN_NAME_V1,
+    PROFILE_STRICT,
+    SUPPORTED_MATCHING_PROFILES,
+    SUPPORTED_NAME_MATCH_STATUSES,
+    SUPPORTED_NAME_MATCHING_LANGUAGES,
+    MatchingProfile,
+    MatchingProfileSpec,
+    NameMatchingLanguage,
+    NameMatchMethod,
+    NameMatchStatus,
+    get_profile_spec,
+    validate_matching_language,
+    validate_matching_profile,
+)
 
 # ---------------------------------------------------------------------------
 # Constants & Versions
@@ -174,6 +202,38 @@ class ExpectedDetails(BaseModel):
         default=None,
         description="List of fields that MUST match for overall outcome ('full_name', 'date_of_birth')",
     )
+    matching_profile: Optional[str] = Field(
+        default=None,
+        description="Host-chosen matching profile ('strict' or 'ethiopian_name_v1'). If None, falls back to host config default ('strict').",
+    )
+    language: Optional[str] = Field(
+        default=None,
+        description="Host-specified language code ('am' or 'en') for name matching.",
+    )
+
+    @field_validator("matching_profile")
+    @classmethod
+    def validate_profile(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v_clean = v.strip().lower()
+        if v_clean not in SUPPORTED_MATCHING_PROFILES:
+            raise ValueError(
+                f"Unsupported matching profile '{v}'. Must be one of {list(SUPPORTED_MATCHING_PROFILES)}."
+            )
+        return v_clean
+
+    @field_validator("language")
+    @classmethod
+    def validate_lang(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v_clean = v.strip().lower()
+        if v_clean not in SUPPORTED_NAME_MATCHING_LANGUAGES:
+            raise ValueError(
+                f"Unsupported name matching language '{v}'. Must be one of {list(SUPPORTED_NAME_MATCHING_LANGUAGES)}."
+            )
+        return v_clean
 
     @field_validator("dob_calendar")
     @classmethod
@@ -283,6 +343,14 @@ class ExpectedDetailsRecord(BaseModel):
         default=None,
         description="Opaque verification request_id once bound by start tool",
     )
+    matching_profile: str = Field(
+        default=PROFILE_STRICT,
+        description="Active matching profile bound to this record ('strict' or 'ethiopian_name_v1')",
+    )
+    language: Optional[str] = Field(
+        default=None,
+        description="Bound language code ('am' or 'en')",
+    )
 
     @model_validator(mode="after")
     def validate_details_presence(self) -> "ExpectedDetailsRecord":
@@ -377,6 +445,26 @@ class DetailsMatchResult(BaseModel):
     error_code: Optional[str] = Field(
         default=None,
         description="Machine-readable error code if matching failed",
+    )
+    matching_profile: str = Field(
+        default=PROFILE_STRICT,
+        description="Matching profile applied ('strict' or 'ethiopian_name_v1')",
+    )
+    profile_version: Optional[str] = Field(
+        default=None,
+        description="Version of the matching profile/algorithm",
+    )
+    name_match_status: Optional[str] = Field(
+        default=None,
+        description="Detailed name match outcome: 'exact', 'approved_equivalent', 'review_required', 'mismatch', 'unavailable'",
+    )
+    name_match_method: Optional[str] = Field(
+        default=None,
+        description="Method used for name comparison ('exact_normalized', 'transliteration', 'phonetic', etc.)",
+    )
+    name_match_reason: Optional[str] = Field(
+        default=None,
+        description="Safe machine-readable reason code for name matching outcome",
     )
 
 

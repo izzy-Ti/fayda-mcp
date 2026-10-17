@@ -152,6 +152,18 @@ class FaydaConfig(BaseModel):
         default=900,
         description="Default TTL in seconds for expected details records (default: 900s, max: 3600s)",
     )
+    name_matching_profile: str = Field(
+        default="strict",
+        description="Default name matching profile ('strict' or 'ethiopian_name_v1'). Strict by default.",
+    )
+    name_matching_allowed_profiles: List[str] = Field(
+        default_factory=lambda: ["strict", "ethiopian_name_v1"],
+        description="Permitted name matching profiles on this host",
+    )
+    name_matching_languages: List[str] = Field(
+        default_factory=lambda: ["am", "en"],
+        description="Permitted languages for Ethiopian name matching",
+    )
 
     def load_qr_trust_store(self) -> Any:
         """Instantiate a QRTrustStore from configured bundle path or inline PEM."""
@@ -402,6 +414,33 @@ class FaydaConfig(BaseModel):
                     default="900",
                 )
             ),
+            name_matching_profile=get_val(
+                f"{env_prefix}NAME_MATCHING_PROFILE",
+                f"{env_prefix}MATCHING_PROFILE",
+                "NAME_MATCHING_PROFILE",
+                "MATCHING_PROFILE",
+                default="strict",
+            ),
+            name_matching_allowed_profiles=[
+                p.strip().lower()
+                for p in get_val(
+                    f"{env_prefix}NAME_MATCHING_ALLOWED_PROFILES",
+                    f"{env_prefix}MATCHING_ALLOWED_PROFILES",
+                    "NAME_MATCHING_ALLOWED_PROFILES",
+                    "MATCHING_ALLOWED_PROFILES",
+                    default="strict ethiopian_name_v1",
+                ).replace(",", " ").split()
+                if p.strip()
+            ] or ["strict", "ethiopian_name_v1"],
+            name_matching_languages=[
+                l.strip().lower()
+                for l in get_val(
+                    f"{env_prefix}NAME_MATCHING_LANGUAGES",
+                    "NAME_MATCHING_LANGUAGES",
+                    default="am en",
+                ).replace(",", " ").split()
+                if l.strip()
+            ] or ["am", "en"],
         )
 
     @classmethod

@@ -127,6 +127,9 @@ class FaydaVerificationService:
             policy=self.policy,
             session_store=self.sessions,
             encryption_key=encryption_key,
+            default_profile=self.config.name_matching_profile,
+            allowed_profiles=self.config.name_matching_allowed_profiles,
+            allowed_languages=self.config.name_matching_languages,
         )
 
     async def __aenter__(self) -> "FaydaVerificationService":

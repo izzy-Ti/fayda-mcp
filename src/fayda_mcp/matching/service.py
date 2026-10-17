@@ -11,9 +11,22 @@ from fayda_mcp.exceptions import (
 )
 from fayda_mcp.matching.crypto import DetailsEncryptor
 from fayda_mcp.matching.normalization import evaluate_details_matching
+from fayda_mcp.matching.profiles import (
+    METHOD_EXACT_NORMALIZED,
+    NAME_MATCH_EXACT,
+    NAME_MATCH_MISMATCH,
+    NAME_MATCH_UNAVAILABLE,
+    PROFILE_STRICT,
+    SUPPORTED_MATCHING_PROFILES,
+    SUPPORTED_NAME_MATCHING_LANGUAGES,
+    get_profile_spec,
+    validate_matching_language,
+    validate_matching_profile,
+)
 from fayda_mcp.matching.schemas import (
     DEFAULT_COMPARISON_POLICY_VERSION,
     DEFAULT_EXPECTED_DETAILS_TTL_SECONDS,
+    MATCH_FIELD_FULL_NAME,
     MAX_EXPECTED_DETAILS_TTL_SECONDS,
     MIN_EXPECTED_DETAILS_TTL_SECONDS,
     DetailsAlreadyBoundError,
@@ -57,9 +70,15 @@ class DetailsMatchingService:
         session_store: Optional[SessionStore] = None,
         encryptor: Optional[DetailsEncryptor] = None,
         encryption_key: Optional[Union[str, bytes]] = None,
+        default_profile: str = PROFILE_STRICT,
+        allowed_profiles: Optional[Any] = None,
+        allowed_languages: Optional[Any] = None,
     ) -> None:
         self.policy = policy or VerificationPolicy()
         self.encryptor = encryptor or DetailsEncryptor(key=encryption_key)
+        self.default_profile = default_profile or PROFILE_STRICT
+        self.allowed_profiles = list(allowed_profiles) if allowed_profiles is not None else list(SUPPORTED_MATCHING_PROFILES)
+        self.allowed_languages = list(allowed_languages) if allowed_languages is not None else list(SUPPORTED_NAME_MATCHING_LANGUAGES)
 
         if store is not None:
             self.store = store
@@ -127,6 +146,24 @@ class DetailsMatchingService:
                 DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
             )
 
+        # 4b. Validate matching profile and language against host configuration
+        target_profile = details_model.matching_profile or self.default_profile
+        try:
+            validated_profile = validate_matching_profile(target_profile, allowed_profiles=self.allowed_profiles)
+        except ValueError as e:
+            raise DetailsMatchingError(
+                str(e),
+                DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
+            ) from e
+
+        try:
+            validated_lang = validate_matching_language(details_model.language, allowed_languages=self.allowed_languages)
+        except ValueError as e:
+            raise DetailsMatchingError(
+                str(e),
+                DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
+            ) from e
+
         # 5. Bound and enforce short TTL
         clamped_ttl = max(
             MIN_EXPECTED_DETAILS_TTL_SECONDS,
@@ -149,6 +186,8 @@ class DetailsMatchingService:
             created_at=now.isoformat(),
             expires_at=expires_at.isoformat(),
             bound_request_id=None,
+            matching_profile=validated_profile,
+            language=validated_lang,
         )
 
         # 8. Persist into expected details store with short TTL and authenticated encryption
@@ -270,6 +309,8 @@ class DetailsMatchingService:
             created_at=record.created_at,
             expires_at=record.expires_at,
             bound_request_id=clean_request_id,
+            matching_profile=record.matching_profile,
+            language=record.language,
         )
 
         await self.store.save_expected_details(ref, updated_record, max(1, remaining_ttl))
@@ -354,6 +395,13 @@ class DetailsMatchingService:
             except Exception:
                 record_error_reason = "details_reference_not_found"
 
+        active_profile = (record.matching_profile if record else None) or self.default_profile
+        try:
+            profile_spec = get_profile_spec(active_profile)
+            profile_version = profile_spec.version
+        except Exception:
+            profile_version = "details-v1"
+
         if record is None:
             safe_reason = record_error_reason or "details_reference_not_found"
             res = DetailsMatchResult(
@@ -362,6 +410,8 @@ class DetailsMatchingService:
                 matching_status="unavailable",
                 matches={},
                 comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                matching_profile=active_profile,
+                profile_version=profile_version,
                 required_fields=[],
                 checked_at=now_iso,
                 expires_at=expires_at,
@@ -380,6 +430,8 @@ class DetailsMatchingService:
                 matching_status="unavailable",
                 matches={},
                 comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                matching_profile=active_profile,
+                profile_version=profile_version,
                 required_fields=list(record.expected_details.required_fields or []) if record.expected_details else [],
                 checked_at=now_iso,
                 expires_at=expires_at or record.expires_at,
@@ -397,6 +449,8 @@ class DetailsMatchingService:
                 matching_status="unavailable",
                 matches={},
                 comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                matching_profile=active_profile,
+                profile_version=profile_version,
                 required_fields=list(record.expected_details.required_fields or []) if record.expected_details else [],
                 checked_at=now_iso,
                 expires_at=expires_at or record.expires_at,
@@ -414,6 +468,8 @@ class DetailsMatchingService:
                 matching_status="unavailable",
                 matches={},
                 comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                matching_profile=active_profile,
+                profile_version=profile_version,
                 required_fields=[],
                 checked_at=now_iso,
                 expires_at=expires_at or record.expires_at,
@@ -431,12 +487,34 @@ class DetailsMatchingService:
             provider_dob_calendar=provider_dob_calendar,
         )
 
+        name_match_status: Optional[str] = None
+        name_match_method: Optional[str] = None
+        name_match_reason: Optional[str] = None
+
+        if MATCH_FIELD_FULL_NAME in matches:
+            outcome = matches[MATCH_FIELD_FULL_NAME]
+            if outcome is True:
+                name_match_status = NAME_MATCH_EXACT
+                name_match_method = METHOD_EXACT_NORMALIZED
+            elif outcome is False:
+                name_match_status = NAME_MATCH_MISMATCH
+                name_match_method = METHOD_EXACT_NORMALIZED
+                name_match_reason = reasons.get(MATCH_FIELD_FULL_NAME)
+            else:
+                name_match_status = NAME_MATCH_UNAVAILABLE
+                name_match_reason = reasons.get(MATCH_FIELD_FULL_NAME)
+
         res = DetailsMatchResult(
             request_id=clean_request_id,
             verification_method="esignet",
             matching_status=overall_status,
             matches=matches,
             comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+            matching_profile=active_profile,
+            profile_version=profile_version,
+            name_match_status=name_match_status,
+            name_match_method=name_match_method,
+            name_match_reason=name_match_reason,
             required_fields=list(record.expected_details.required_fields or matches.keys()),
             checked_at=now_iso,
             expires_at=expires_at or record.expires_at,

@@ -403,15 +403,15 @@ def are_phonetically_similar(token_a: str, token_b: str) -> Tuple[bool, bool, st
     codes_b = get_token_phonetic_codes(token_b)
 
     # Double Metaphone match check
-    dm_match = (
+    dm_match = bool(
         (codes_a.double_metaphone_primary and codes_a.double_metaphone_primary == codes_b.double_metaphone_primary)
         or (codes_a.double_metaphone_primary and codes_a.double_metaphone_primary == codes_b.double_metaphone_secondary)
         or (codes_a.double_metaphone_secondary and codes_a.double_metaphone_secondary == codes_b.double_metaphone_primary)
     )
 
     # Ethiopian phonetic code match check
-    eth_match = (
-        bool(codes_a.ethiopian_phonetic_code)
+    eth_match = bool(
+        codes_a.ethiopian_phonetic_code
         and codes_a.ethiopian_phonetic_code == codes_b.ethiopian_phonetic_code
     )
 

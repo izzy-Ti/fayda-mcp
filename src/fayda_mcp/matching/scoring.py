@@ -21,7 +21,10 @@ from fayda_mcp.matching.structure import (
     parse_ethiopian_name_structure,
 )
 from fayda_mcp.matching.transliteration import transliterate_token
-from fayda_mcp.matching.variations import is_approved_token_variation
+from fayda_mcp.matching.variations import (
+    _has_ethiopic_chars,
+    is_approved_token_variation,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -223,13 +226,69 @@ def compute_token_similarity_features(
             composite_similarity=1.0,
         )
 
-    # 1. Spelling distances
-    lev_dist = levenshtein_distance(clean_a, clean_b)
-    lev_sim = levenshtein_similarity(clean_a, clean_b)
-    jw_sim = jaro_winkler_similarity(clean_a, clean_b)
+    # 1. Spelling distances & Phonetic matches
+    eth_a = _has_ethiopic_chars(clean_a)
+    eth_b = _has_ethiopic_chars(clean_b)
 
-    # 2. Phonetic matches
-    dm_match, eth_match, code = are_phonetically_similar(clean_a, clean_b)
+    if eth_a and not eth_b:
+        trans_res = transliterate_token(clean_a)
+        best_lev_sim = 0.0
+        best_jw_sim = 0.0
+        best_lev_dist = len(clean_b)
+        best_dm = False
+        best_eth = False
+        best_code = ""
+        for var in trans_res.variants:
+            v_clean = var.strip().lower()
+            l_dist = levenshtein_distance(v_clean, clean_b)
+            l_sim = levenshtein_similarity(v_clean, clean_b)
+            j_sim = jaro_winkler_similarity(v_clean, clean_b)
+            d_m, e_m, c = are_phonetically_similar(v_clean, clean_b)
+            if l_sim > best_lev_sim:
+                best_lev_sim = l_sim
+                best_jw_sim = j_sim
+                best_lev_dist = l_dist
+                best_dm = d_m
+                best_eth = e_m
+                best_code = c
+        lev_dist = best_lev_dist
+        lev_sim = best_lev_sim
+        jw_sim = best_jw_sim
+        dm_match = best_dm
+        eth_match = best_eth
+        code = best_code
+    elif eth_b and not eth_a:
+        trans_res = transliterate_token(clean_b)
+        best_lev_sim = 0.0
+        best_jw_sim = 0.0
+        best_lev_dist = len(clean_a)
+        best_dm = False
+        best_eth = False
+        best_code = ""
+        for var in trans_res.variants:
+            v_clean = var.strip().lower()
+            l_dist = levenshtein_distance(v_clean, clean_a)
+            l_sim = levenshtein_similarity(v_clean, clean_a)
+            j_sim = jaro_winkler_similarity(v_clean, clean_a)
+            d_m, e_m, c = are_phonetically_similar(v_clean, clean_a)
+            if l_sim > best_lev_sim:
+                best_lev_sim = l_sim
+                best_jw_sim = j_sim
+                best_lev_dist = l_dist
+                best_dm = d_m
+                best_eth = e_m
+                best_code = c
+        lev_dist = best_lev_dist
+        lev_sim = best_lev_sim
+        jw_sim = best_jw_sim
+        dm_match = best_dm
+        eth_match = best_eth
+        code = best_code
+    else:
+        lev_dist = levenshtein_distance(clean_a, clean_b)
+        lev_sim = levenshtein_similarity(clean_a, clean_b)
+        jw_sim = jaro_winkler_similarity(clean_a, clean_b)
+        dm_match, eth_match, code = are_phonetically_similar(clean_a, clean_b)
 
     # 3. Transliteration / approved variation evidence
     has_evidence, rule_id = is_approved_token_variation(clean_a, clean_b)

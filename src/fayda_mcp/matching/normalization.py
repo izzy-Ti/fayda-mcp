@@ -176,13 +176,12 @@ def compare_names(
         if unc.has_uncertainty:
             return None, unc.reason
 
-        from fayda_mcp.matching.structure import compare_ethiopian_name_structures
-        from fayda_mcp.matching.profiles import NAME_MATCH_REVIEW_REQUIRED
-        struct_res = compare_ethiopian_name_structures(expected_name, provider_name)
-        if not struct_res.is_compatible:
-            if struct_res.status == NAME_MATCH_REVIEW_REQUIRED:
-                return None, struct_res.reason
-            return False, struct_res.reason or REASON_NAME_MISMATCH
+        from fayda_mcp.matching.review import evaluate_review_outcomes
+        review_res = evaluate_review_outcomes(expected_name, provider_name)
+        if review_res.matches_full_name is None:
+            return None, review_res.reason
+        if review_res.matches_full_name is False:
+            return False, review_res.reason or REASON_NAME_MISMATCH
         return True, None
 
     norm_exp = normalize_name_safely(expected_name)

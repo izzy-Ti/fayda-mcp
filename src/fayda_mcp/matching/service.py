@@ -17,6 +17,7 @@ from fayda_mcp.matching.normalization import (
 from fayda_mcp.matching.profiles import (
     METHOD_APPROVED_VARIATION,
     METHOD_EXACT_NORMALIZED,
+    METHOD_PHONETIC,
     METHOD_TRANSLITERATION,
     NAME_MATCH_APPROVED_EQUIVALENT,
     NAME_MATCH_EXACT,
@@ -31,6 +32,7 @@ from fayda_mcp.matching.profiles import (
     validate_matching_language,
     validate_matching_profile,
 )
+from fayda_mcp.matching.review import evaluate_review_outcomes
 from fayda_mcp.matching.variations import is_approved_name_variation
 from fayda_mcp.matching.schemas import (
     DEFAULT_COMPARISON_POLICY_VERSION,
@@ -506,24 +508,10 @@ class DetailsMatchingService:
             if outcome is True:
                 if active_profile == PROFILE_ETHIOPIAN_NAME_V1:
                     prov_raw = claims.get("name") or claims.get("full_name")
-                    norm_exp = normalize_name_safely(record.expected_details.full_name)
-                    norm_prov = normalize_name_safely(prov_raw)
-                    if norm_exp and norm_prov and norm_exp.normalized == norm_prov.normalized:
-                        name_match_status = NAME_MATCH_EXACT
-                        name_match_method = METHOD_EXACT_NORMALIZED
-                    else:
-                        is_equiv, method, _ = is_approved_name_variation(
-                            record.expected_details.full_name, prov_raw
-                        )
-                        if is_equiv:
-                            name_match_status = NAME_MATCH_APPROVED_EQUIVALENT
-                            if method == "transliteration":
-                                name_match_method = METHOD_TRANSLITERATION
-                            else:
-                                name_match_method = METHOD_APPROVED_VARIATION
-                        else:
-                            name_match_status = NAME_MATCH_EXACT
-                            name_match_method = METHOD_EXACT_NORMALIZED
+                    rev = evaluate_review_outcomes(record.expected_details.full_name, prov_raw)
+                    name_match_status = rev.status
+                    name_match_method = rev.method or METHOD_EXACT_NORMALIZED
+                    name_match_reason = rev.reason
                 else:
                     name_match_status = NAME_MATCH_EXACT
                     name_match_method = METHOD_EXACT_NORMALIZED
@@ -541,9 +529,13 @@ class DetailsMatchingService:
                     "digits_in_name",
                     "ambiguous_transliteration",
                     "missing_name_component",
+                    "phonetic_only_agreement",
+                    "initials_in_name",
                 }
                 if active_profile == PROFILE_ETHIOPIAN_NAME_V1 and reason in review_reasons:
                     name_match_status = NAME_MATCH_REVIEW_REQUIRED
+                    if reason == "phonetic_only_agreement":
+                        name_match_method = METHOD_PHONETIC
                 else:
                     name_match_status = NAME_MATCH_UNAVAILABLE
                 name_match_reason = reason

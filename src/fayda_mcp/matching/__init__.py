@@ -100,6 +100,15 @@ from fayda_mcp.matching.scoring import (
     levenshtein_distance,
     levenshtein_similarity,
 )
+from fayda_mcp.matching.review import (
+    REASON_INITIALS_IN_NAME,
+    REASON_PHONETIC_ONLY_AGREEMENT,
+    REVIEW_SPEC_VERSION,
+    ReviewEvaluationResult,
+    evaluate_review_outcomes,
+    is_initial_token,
+    matches_initial,
+)
 from fayda_mcp.matching.normalization import (
     REASON_DOB_MISMATCH,
     REASON_INVALID_DATE_FORMAT,
@@ -332,4 +341,11 @@ __all__ = [
     "NameSimilarityFeatures",
     "compute_token_similarity_features",
     "compute_name_similarity_features",
+    "REVIEW_SPEC_VERSION",
+    "REASON_PHONETIC_ONLY_AGREEMENT",
+    "REASON_INITIALS_IN_NAME",
+    "ReviewEvaluationResult",
+    "is_initial_token",
+    "matches_initial",
+    "evaluate_review_outcomes",
 ]

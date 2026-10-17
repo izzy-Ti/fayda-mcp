@@ -466,6 +466,30 @@ class DetailsMatchResult(BaseModel):
         default=None,
         description="Safe machine-readable reason code for name matching outcome",
     )
+    method: Optional[str] = Field(
+        default=None,
+        description="Comparison method ('exact_normalized', 'transliteration', 'phonetic', 'approved_variation')",
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="Safe machine-readable reason code for matching outcome",
+    )
+
+    @model_validator(mode="after")
+    def sync_method_and_reason(self) -> "DetailsMatchResult":
+        # Synchronize method and name_match_method
+        m = self.method or self.name_match_method
+        if m is not None:
+            object.__setattr__(self, "method", m)
+            object.__setattr__(self, "name_match_method", m)
+
+        # Synchronize reason and name_match_reason
+        r = self.reason or self.name_match_reason
+        if r is not None:
+            object.__setattr__(self, "reason", r)
+            object.__setattr__(self, "name_match_reason", r)
+
+        return self
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,14 @@ from fayda_mcp.matching.transliteration import (
     transliterate_amharic_to_latin,
     transliterate_token,
 )
+from fayda_mcp.matching.variations import (
+    ACTIVE_CONTEXT_RULES,
+    REVIEWED_EQUIVALENT_CLUSTERS,
+    VARIATIONS_SPEC_VERSION,
+    get_approved_variants_for_token,
+    is_approved_name_variation,
+    is_approved_token_variation,
+)
 from fayda_mcp.matching.normalization import (
     REASON_DOB_MISMATCH,
     REASON_INVALID_DATE_FORMAT,
@@ -234,4 +242,10 @@ __all__ = [
     "TransliterationResult",
     "transliterate_token",
     "transliterate_amharic_to_latin",
+    "VARIATIONS_SPEC_VERSION",
+    "REVIEWED_EQUIVALENT_CLUSTERS",
+    "ACTIVE_CONTEXT_RULES",
+    "is_approved_token_variation",
+    "is_approved_name_variation",
+    "get_approved_variants_for_token",
 ]

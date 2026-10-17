@@ -10,12 +10,19 @@ from fayda_mcp.exceptions import (
     PolicyViolationError,
 )
 from fayda_mcp.matching.crypto import DetailsEncryptor
-from fayda_mcp.matching.normalization import evaluate_details_matching
+from fayda_mcp.matching.normalization import (
+    evaluate_details_matching,
+    normalize_name_safely,
+)
 from fayda_mcp.matching.profiles import (
+    METHOD_APPROVED_VARIATION,
     METHOD_EXACT_NORMALIZED,
+    METHOD_TRANSLITERATION,
+    NAME_MATCH_APPROVED_EQUIVALENT,
     NAME_MATCH_EXACT,
     NAME_MATCH_MISMATCH,
     NAME_MATCH_UNAVAILABLE,
+    PROFILE_ETHIOPIAN_NAME_V1,
     PROFILE_STRICT,
     SUPPORTED_MATCHING_PROFILES,
     SUPPORTED_NAME_MATCHING_LANGUAGES,
@@ -23,6 +30,7 @@ from fayda_mcp.matching.profiles import (
     validate_matching_language,
     validate_matching_profile,
 )
+from fayda_mcp.matching.variations import is_approved_name_variation
 from fayda_mcp.matching.schemas import (
     DEFAULT_COMPARISON_POLICY_VERSION,
     DEFAULT_EXPECTED_DETAILS_TTL_SECONDS,
@@ -485,6 +493,7 @@ class DetailsMatchingService:
             expected_details=record.expected_details,
             claims=claims,
             provider_dob_calendar=provider_dob_calendar,
+            matching_profile=active_profile,
         )
 
         name_match_status: Optional[str] = None
@@ -494,8 +503,29 @@ class DetailsMatchingService:
         if MATCH_FIELD_FULL_NAME in matches:
             outcome = matches[MATCH_FIELD_FULL_NAME]
             if outcome is True:
-                name_match_status = NAME_MATCH_EXACT
-                name_match_method = METHOD_EXACT_NORMALIZED
+                if active_profile == PROFILE_ETHIOPIAN_NAME_V1:
+                    prov_raw = claims.get("name") or claims.get("full_name")
+                    norm_exp = normalize_name_safely(record.expected_details.full_name)
+                    norm_prov = normalize_name_safely(prov_raw)
+                    if norm_exp and norm_prov and norm_exp.normalized == norm_prov.normalized:
+                        name_match_status = NAME_MATCH_EXACT
+                        name_match_method = METHOD_EXACT_NORMALIZED
+                    else:
+                        is_equiv, method, _ = is_approved_name_variation(
+                            record.expected_details.full_name, prov_raw
+                        )
+                        if is_equiv:
+                            name_match_status = NAME_MATCH_APPROVED_EQUIVALENT
+                            if method == "transliteration":
+                                name_match_method = METHOD_TRANSLITERATION
+                            else:
+                                name_match_method = METHOD_APPROVED_VARIATION
+                        else:
+                            name_match_status = NAME_MATCH_EXACT
+                            name_match_method = METHOD_EXACT_NORMALIZED
+                else:
+                    name_match_status = NAME_MATCH_EXACT
+                    name_match_method = METHOD_EXACT_NORMALIZED
             elif outcome is False:
                 name_match_status = NAME_MATCH_MISMATCH
                 name_match_method = METHOD_EXACT_NORMALIZED

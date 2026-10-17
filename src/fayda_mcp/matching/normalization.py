@@ -22,6 +22,7 @@ from fayda_mcp.localization.calendars import (
 )
 from fayda_mcp.matching.claims import extract_approved_matching_claims
 from fayda_mcp.matching.detection import InputDetectionResult, detect_input_script
+from fayda_mcp.matching.profiles import PROFILE_ETHIOPIAN_NAME_V1, PROFILE_STRICT
 from fayda_mcp.matching.schemas import (
     MATCH_FIELD_DATE_OF_BIRTH,
     MATCH_FIELD_FULL_NAME,
@@ -139,13 +140,17 @@ def normalize_name(name: Optional[str]) -> Optional[str]:
 def compare_names(
     expected_name: Optional[str],
     provider_name: Optional[str],
+    matching_profile: str = PROFILE_STRICT,
 ) -> Tuple[FieldMatchOutcome, Optional[str]]:
     """Deterministically compare expected and provider names.
 
     Rules:
     - If either is missing or empty: returns (None, reason).
     - If normalized names match exactly: returns (True, None).
-    - If normalized names differ (different spelling, transposed order, or different script): returns (False, 'name_mismatch').
+    - If matching_profile == PROFILE_ETHIOPIAN_NAME_V1:
+        Checks approved variations and transliteration equivalents.
+        If approved: returns (True, None).
+    - If normalized names differ: returns (False, 'name_mismatch').
 
     Returns:
         Tuple of (FieldMatchOutcome, Optional[reason_code])
@@ -156,14 +161,26 @@ def compare_names(
     if not expected_name or not str(expected_name).strip():
         return None, "missing_expected_name"
 
-    norm_exp = normalize_name(expected_name)
-    norm_prov = normalize_name(provider_name)
+    norm_exp = normalize_name_safely(expected_name)
+    norm_prov = normalize_name_safely(provider_name)
 
     if norm_exp is None or norm_prov is None:
         return None, REASON_PROVIDER_CLAIM_UNAVAILABLE
 
-    if norm_exp == norm_prov:
+    if norm_exp.normalized == norm_prov.normalized:
         return True, None
+
+    # Strict profile requires exact normalized match
+    if matching_profile == PROFILE_STRICT:
+        return False, REASON_NAME_MISMATCH
+
+    # ethiopian_name_v1 profile evaluates approved variations
+    if matching_profile == PROFILE_ETHIOPIAN_NAME_V1:
+        from fayda_mcp.matching.variations import is_approved_name_variation
+        is_equiv, _, _ = is_approved_name_variation(expected_name, provider_name)
+        if is_equiv:
+            return True, None
+        return False, REASON_NAME_MISMATCH
 
     return False, REASON_NAME_MISMATCH
 
@@ -266,6 +283,7 @@ def evaluate_details_matching(
     expected_details: ExpectedDetails,
     claims: Dict[str, Any],
     provider_dob_calendar: str = "gregorian",
+    matching_profile: Optional[str] = None,
 ) -> Tuple[Dict[str, FieldMatchOutcome], Dict[str, str], Literal["matched", "mismatched", "unavailable"]]:
     """Execute complete deterministic comparison between expectations and provider claims.
 
@@ -273,6 +291,7 @@ def evaluate_details_matching(
         expected_details: ExpectedDetails specification.
         claims: Normalized claims from authorized provider token/userinfo.
         provider_dob_calendar: Calendar convention for provider's DOB claim ('gregorian' or 'ethiopic').
+        matching_profile: Optional explicit matching profile override.
 
     Returns:
         Tuple of:
@@ -280,6 +299,8 @@ def evaluate_details_matching(
             - reasons: Dict mapping field names to safe reason codes if mismatch or unavailable
             - overall_status: Overall outcome ('matched', 'mismatched', or 'unavailable')
     """
+    effective_profile = matching_profile or expected_details.matching_profile or PROFILE_STRICT
+
     extracted_claims, unavailable_reasons = extract_approved_matching_claims(
         claims=claims,
         expected_details=expected_details,
@@ -291,7 +312,11 @@ def evaluate_details_matching(
     # 1. Full name comparison if expected
     if expected_details.full_name is not None and expected_details.full_name.strip():
         prov_name = extracted_claims.get(MATCH_FIELD_FULL_NAME)
-        outcome, reason = compare_names(expected_details.full_name, prov_name)
+        outcome, reason = compare_names(
+            expected_details.full_name,
+            prov_name,
+            matching_profile=effective_profile,
+        )
         matches[MATCH_FIELD_FULL_NAME] = outcome
         if reason:
             reasons[MATCH_FIELD_FULL_NAME] = reason

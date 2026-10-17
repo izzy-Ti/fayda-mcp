@@ -141,15 +141,18 @@ def compare_names(
     expected_name: Optional[str],
     provider_name: Optional[str],
     matching_profile: str = PROFILE_STRICT,
+    language: Optional[str] = None,
 ) -> Tuple[FieldMatchOutcome, Optional[str]]:
     """Deterministically compare expected and provider names.
 
     Rules:
     - If either is missing or empty: returns (None, reason).
-    - If normalized names match exactly: returns (True, None).
     - If matching_profile == PROFILE_ETHIOPIAN_NAME_V1:
+        Evaluates uncertainty (unknown language, unsupported characters, ambiguous transliteration).
+        If uncertain: returns (None, reason).
         Checks approved variations and transliteration equivalents.
         If approved: returns (True, None).
+    - If normalized names match exactly: returns (True, None).
     - If normalized names differ: returns (False, 'name_mismatch').
 
     Returns:
@@ -160,6 +163,18 @@ def compare_names(
 
     if not expected_name or not str(expected_name).strip():
         return None, "missing_expected_name"
+
+    # Evaluate uncertainty under ethiopian_name_v1 profile
+    if matching_profile == PROFILE_ETHIOPIAN_NAME_V1:
+        from fayda_mcp.matching.uncertainty import evaluate_name_uncertainty
+        unc = evaluate_name_uncertainty(
+            expected_name=expected_name,
+            provider_name=provider_name,
+            language=language,
+            matching_profile=matching_profile,
+        )
+        if unc.has_uncertainty:
+            return None, unc.reason
 
     norm_exp = normalize_name_safely(expected_name)
     norm_prov = normalize_name_safely(provider_name)
@@ -316,6 +331,7 @@ def evaluate_details_matching(
             expected_details.full_name,
             prov_name,
             matching_profile=effective_profile,
+            language=expected_details.language,
         )
         matches[MATCH_FIELD_FULL_NAME] = outcome
         if reason:

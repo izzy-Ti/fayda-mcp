@@ -21,6 +21,7 @@ from fayda_mcp.matching.profiles import (
     NAME_MATCH_APPROVED_EQUIVALENT,
     NAME_MATCH_EXACT,
     NAME_MATCH_MISMATCH,
+    NAME_MATCH_REVIEW_REQUIRED,
     NAME_MATCH_UNAVAILABLE,
     PROFILE_ETHIOPIAN_NAME_V1,
     PROFILE_STRICT,
@@ -531,8 +532,20 @@ class DetailsMatchingService:
                 name_match_method = METHOD_EXACT_NORMALIZED
                 name_match_reason = reasons.get(MATCH_FIELD_FULL_NAME)
             else:
-                name_match_status = NAME_MATCH_UNAVAILABLE
-                name_match_reason = reasons.get(MATCH_FIELD_FULL_NAME)
+                reason = reasons.get(MATCH_FIELD_FULL_NAME)
+                review_reasons = {
+                    "unsupported_characters",
+                    "invisible_control_characters",
+                    "invisible_or_control_characters",
+                    "mixed_script",
+                    "digits_in_name",
+                    "ambiguous_transliteration",
+                }
+                if active_profile == PROFILE_ETHIOPIAN_NAME_V1 and reason in review_reasons:
+                    name_match_status = NAME_MATCH_REVIEW_REQUIRED
+                else:
+                    name_match_status = NAME_MATCH_UNAVAILABLE
+                name_match_reason = reason
 
         res = DetailsMatchResult(
             request_id=clean_request_id,

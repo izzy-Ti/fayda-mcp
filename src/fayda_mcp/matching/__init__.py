@@ -54,6 +54,17 @@ from fayda_mcp.matching.variations import (
     is_approved_name_variation,
     is_approved_token_variation,
 )
+from fayda_mcp.matching.uncertainty import (
+    REASON_AMBIGUOUS_TRANSLITERATION,
+    REASON_UNKNOWN_LANGUAGE,
+    REASON_UNSUPPORTED_LANGUAGE,
+    UNCERTAINTY_SPEC_VERSION,
+    UncertaintyEvaluation,
+    check_character_uncertainty,
+    check_language_uncertainty,
+    check_transliteration_uncertainty,
+    evaluate_name_uncertainty,
+)
 from fayda_mcp.matching.normalization import (
     REASON_DOB_MISMATCH,
     REASON_INVALID_DATE_FORMAT,
@@ -248,4 +259,13 @@ __all__ = [
     "is_approved_token_variation",
     "is_approved_name_variation",
     "get_approved_variants_for_token",
+    "UNCERTAINTY_SPEC_VERSION",
+    "REASON_UNKNOWN_LANGUAGE",
+    "REASON_UNSUPPORTED_LANGUAGE",
+    "REASON_AMBIGUOUS_TRANSLITERATION",
+    "UncertaintyEvaluation",
+    "check_character_uncertainty",
+    "check_language_uncertainty",
+    "check_transliteration_uncertainty",
+    "evaluate_name_uncertainty",
 ]

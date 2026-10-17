@@ -122,6 +122,13 @@ from fayda_mcp.matching.calibration import (
     evaluate_threshold_metrics,
     get_default_validation_dataset,
 )
+from fayda_mcp.matching.protection import (
+    PROTECTION_SPEC_VERSION,
+    ProtectedCheckResult,
+    assert_strong_name_never_cancels_mismatch,
+    assert_strong_name_never_cancels_missing_evidence,
+    evaluate_protected_checks,
+)
 from fayda_mcp.matching.normalization import (
     REASON_DOB_MISMATCH,
     REASON_INVALID_DATE_FORMAT,
@@ -372,4 +379,9 @@ __all__ = [
     "evaluate_threshold_metrics",
     "calibrate_thresholds",
     "evaluate_calibrated_decision",
+    "PROTECTION_SPEC_VERSION",
+    "ProtectedCheckResult",
+    "assert_strong_name_never_cancels_mismatch",
+    "assert_strong_name_never_cancels_missing_evidence",
+    "evaluate_protected_checks",
 ]

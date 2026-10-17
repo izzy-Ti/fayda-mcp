@@ -21,6 +21,7 @@ from fayda_mcp.localization.calendars import (
     parse_date_explicit,
 )
 from fayda_mcp.matching.claims import extract_approved_matching_claims
+from fayda_mcp.matching.detection import InputDetectionResult, detect_input_script
 from fayda_mcp.matching.schemas import (
     MATCH_FIELD_DATE_OF_BIRTH,
     MATCH_FIELD_FULL_NAME,
@@ -54,6 +55,10 @@ class NormalizedName(BaseModel):
     normalized: str = Field(..., description="Canonical NFC, Latin case-folded, whitespace-collapsed string")
     tokens: List[str] = Field(default_factory=list, description="Ordered list of normalized name tokens")
     original_tokens: List[str] = Field(default_factory=list, description="Ordered list of raw original name tokens")
+    detection: Optional[InputDetectionResult] = Field(
+        default=None,
+        description="Script detection, character validation, and invisible/control review flags",
+    )
 
     def __str__(self) -> str:
         return self.normalized
@@ -103,11 +108,15 @@ def normalize_name_safely(name: Optional[str]) -> Optional[NormalizedName]:
     original_collapsed = re.sub(r"[\s\u1361]+", " ", nfc_original).strip()
     original_tokens = [t for t in original_collapsed.split(" ") if t]
 
+    # 6. Detect script and flag unsupported/invisible/control characters
+    detection = detect_input_script(raw_str)
+
     return NormalizedName(
         original=raw_str,
         normalized=collapsed,
         tokens=tokens,
         original_tokens=original_tokens,
+        detection=detection,
     )
 
 

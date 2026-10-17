@@ -81,6 +81,25 @@ from fayda_mcp.matching.structure import (
     compare_ethiopian_name_structures,
     parse_ethiopian_name_structure,
 )
+from fayda_mcp.matching.phonetics import (
+    PHONETICS_SPEC_VERSION,
+    PhoneticCodes,
+    are_phonetically_similar,
+    compute_double_metaphone,
+    compute_ethiopian_phonetic_code,
+    get_token_phonetic_codes,
+)
+from fayda_mcp.matching.scoring import (
+    SCORING_SPEC_VERSION,
+    NameSimilarityFeatures,
+    TokenSimilarityFeatures,
+    compute_name_similarity_features,
+    compute_token_similarity_features,
+    jaro_similarity,
+    jaro_winkler_similarity,
+    levenshtein_distance,
+    levenshtein_similarity,
+)
 from fayda_mcp.matching.normalization import (
     REASON_DOB_MISMATCH,
     REASON_INVALID_DATE_FORMAT,
@@ -298,4 +317,19 @@ __all__ = [
     "StructureComparisonResult",
     "parse_ethiopian_name_structure",
     "compare_ethiopian_name_structures",
+    "PHONETICS_SPEC_VERSION",
+    "PhoneticCodes",
+    "compute_double_metaphone",
+    "compute_ethiopian_phonetic_code",
+    "get_token_phonetic_codes",
+    "are_phonetically_similar",
+    "SCORING_SPEC_VERSION",
+    "levenshtein_distance",
+    "levenshtein_similarity",
+    "jaro_similarity",
+    "jaro_winkler_similarity",
+    "TokenSimilarityFeatures",
+    "NameSimilarityFeatures",
+    "compute_token_similarity_features",
+    "compute_name_similarity_features",
 ]

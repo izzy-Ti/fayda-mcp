@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import re
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 import unicodedata
+from pydantic import BaseModel, ConfigDict, Field
 
 from fayda_mcp.localization.calendars import (
     CalendarError,
@@ -37,10 +38,84 @@ REASON_PROVIDER_CLAIM_UNAVAILABLE = "provider_claim_unavailable"
 REASON_UNSUPPORTED_CALENDAR = "unsupported_calendar"
 
 
-def normalize_name(name: Optional[str]) -> Optional[str]:
-    """Normalize a name using Unicode NFC, full case-folding, and collapsed whitespace.
+class NormalizedName(BaseModel):
+    """Structured normalized name representation preserving originals, tokens, and canonical string.
 
-    Preserves original script (no transliteration) and token sequence (no reordering).
+    Per guide5 Task 02:
+    - Normalizes safely with Unicode NFC, Latin case-folding, and collapsed whitespace.
+    - Preserves original raw text and original raw tokens.
+    - Preserves token order (no permutation or reordering).
+    - Preserves meaningful letters (consonants, doubled consonants, vowels, glottal apostrophes).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    original: str = Field(..., description="Original raw citizen name string prior to normalization")
+    normalized: str = Field(..., description="Canonical NFC, Latin case-folded, whitespace-collapsed string")
+    tokens: List[str] = Field(default_factory=list, description="Ordered list of normalized name tokens")
+    original_tokens: List[str] = Field(default_factory=list, description="Ordered list of raw original name tokens")
+
+    def __str__(self) -> str:
+        return self.normalized
+
+    @property
+    def token_count(self) -> int:
+        return len(self.tokens)
+
+
+def normalize_name_safely(name: Optional[str]) -> Optional[NormalizedName]:
+    """Safely normalize a name using Unicode NFC, Latin case-folding, and collapsed whitespace.
+
+    Preserves:
+    - Original raw string and original token components.
+    - Strict token sequence and order (e.g. given name, father's name, grandfather's name).
+    - Meaningful letters, apostrophes/glottals, and word components without destructive stripping.
+
+    Args:
+        name: Raw citizen name string.
+
+    Returns:
+        NormalizedName instance or None if name is empty or whitespace-only.
+    """
+    if name is None:
+        return None
+
+    raw_str = str(name)
+    stripped = raw_str.strip()
+    if not stripped:
+        return None
+
+    # 1. Unicode NFC canonical decomposition followed by canonical composition
+    nfc_original = unicodedata.normalize("NFC", stripped)
+
+    # 2. Latin case-folding (converts Latin characters to canonical lowercase; no-op on Ethiopic)
+    folded = nfc_original.casefold()
+
+    # 3. Collapse whitespace and Ethiopic word separators (\u1361) to single space
+    collapsed = re.sub(r"[\s\u1361]+", " ", folded).strip()
+    if not collapsed:
+        return None
+
+    # 4. Extract ordered tokens strictly preserving sequence
+    tokens = [t for t in collapsed.split(" ") if t]
+
+    # 5. Extract corresponding original tokens from nfc_original preserving exact original casing
+    original_collapsed = re.sub(r"[\s\u1361]+", " ", nfc_original).strip()
+    original_tokens = [t for t in original_collapsed.split(" ") if t]
+
+    return NormalizedName(
+        original=raw_str,
+        normalized=collapsed,
+        tokens=tokens,
+        original_tokens=original_tokens,
+    )
+
+
+def normalize_name(name: Optional[str]) -> Optional[str]:
+    """Normalize a name using Unicode NFC, Latin case-folding, and collapsed whitespace.
+
+    Preserves original script (no transliteration), token sequence (no reordering),
+    and meaningful letters.
 
     Args:
         name: Raw citizen name string.
@@ -48,23 +123,8 @@ def normalize_name(name: Optional[str]) -> Optional[str]:
     Returns:
         Canonical string or None if input is empty/None.
     """
-    if name is None:
-        return None
-
-    s = str(name).strip()
-    if not s:
-        return None
-
-    # 1. Unicode NFC canonical decomposition followed by canonical composition
-    nfc_str = unicodedata.normalize("NFC", s)
-
-    # 2. Case-folding (stronger and more comprehensive than lower() for Unicode)
-    folded = nfc_str.casefold()
-
-    # 3. Collapse multiple whitespace characters into a single space
-    collapsed = re.sub(r"\s+", " ", folded).strip()
-
-    return collapsed or None
+    norm = normalize_name_safely(name)
+    return norm.normalized if norm is not None else None
 
 
 def compare_names(

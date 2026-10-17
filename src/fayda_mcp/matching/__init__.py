@@ -22,12 +22,14 @@ from fayda_mcp.matching.normalization import (
     REASON_INVALID_DATE_FORMAT,
     REASON_NAME_MISMATCH,
     REASON_PARTIAL_DOB_UNAVAILABLE,
+    NormalizedName,
     compare_dates,
     compare_names,
     evaluate_details_matching,
     is_partial_date,
     normalize_and_convert_date,
     normalize_name,
+    normalize_name_safely,
 )
 from fayda_mcp.matching.profiles import (
     DEFAULT_MATCHING_PROFILE,
@@ -144,6 +146,8 @@ __all__ = [
     "extract_approved_matching_claims",
     "evaluate_initial_availability",
     "normalize_name",
+    "normalize_name_safely",
+    "NormalizedName",
     "compare_names",
     "is_partial_date",
     "normalize_and_convert_date",

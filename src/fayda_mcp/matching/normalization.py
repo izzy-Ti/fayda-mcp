@@ -164,7 +164,7 @@ def compare_names(
     if not expected_name or not str(expected_name).strip():
         return None, "missing_expected_name"
 
-    # Evaluate uncertainty under ethiopian_name_v1 profile
+    # Evaluate uncertainty and name structure under ethiopian_name_v1 profile
     if matching_profile == PROFILE_ETHIOPIAN_NAME_V1:
         from fayda_mcp.matching.uncertainty import evaluate_name_uncertainty
         unc = evaluate_name_uncertainty(
@@ -176,6 +176,15 @@ def compare_names(
         if unc.has_uncertainty:
             return None, unc.reason
 
+        from fayda_mcp.matching.structure import compare_ethiopian_name_structures
+        from fayda_mcp.matching.profiles import NAME_MATCH_REVIEW_REQUIRED
+        struct_res = compare_ethiopian_name_structures(expected_name, provider_name)
+        if not struct_res.is_compatible:
+            if struct_res.status == NAME_MATCH_REVIEW_REQUIRED:
+                return None, struct_res.reason
+            return False, struct_res.reason or REASON_NAME_MISMATCH
+        return True, None
+
     norm_exp = normalize_name_safely(expected_name)
     norm_prov = normalize_name_safely(provider_name)
 
@@ -186,17 +195,6 @@ def compare_names(
         return True, None
 
     # Strict profile requires exact normalized match
-    if matching_profile == PROFILE_STRICT:
-        return False, REASON_NAME_MISMATCH
-
-    # ethiopian_name_v1 profile evaluates approved variations
-    if matching_profile == PROFILE_ETHIOPIAN_NAME_V1:
-        from fayda_mcp.matching.variations import is_approved_name_variation
-        is_equiv, _, _ = is_approved_name_variation(expected_name, provider_name)
-        if is_equiv:
-            return True, None
-        return False, REASON_NAME_MISMATCH
-
     return False, REASON_NAME_MISMATCH
 
 

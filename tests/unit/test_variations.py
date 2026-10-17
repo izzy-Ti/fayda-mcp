@@ -275,7 +275,7 @@ def test_compare_names_profile_behavior():
         matching_profile=PROFILE_ETHIOPIAN_NAME_V1,
     )
     assert outcome_diff is False
-    assert reason_diff == "name_mismatch"
+    assert reason_diff in ("name_mismatch", "conflicting_given_name")
 
 
 # ---------------------------------------------------------------------------

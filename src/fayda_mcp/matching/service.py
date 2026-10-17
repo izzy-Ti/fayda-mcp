@@ -540,6 +540,7 @@ class DetailsMatchingService:
                     "mixed_script",
                     "digits_in_name",
                     "ambiguous_transliteration",
+                    "missing_name_component",
                 }
                 if active_profile == PROFILE_ETHIOPIAN_NAME_V1 and reason in review_reasons:
                     name_match_status = NAME_MATCH_REVIEW_REQUIRED

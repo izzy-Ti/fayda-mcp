@@ -35,6 +35,17 @@ from fayda_mcp.matching.detection import (
     is_latin_char,
     is_permitted_punctuation,
 )
+from fayda_mcp.matching.transliteration import (
+    AMHARIC_FIDEL_TABLE,
+    AMHARIC_TRANSLITERATION_VERSION,
+    DEFAULT_MAX_TOTAL_VARIANTS,
+    DEFAULT_MAX_VARIANTS_PER_TOKEN,
+    TRANSLITERATION_SPEC_VERSION,
+    TokenTransliteration,
+    TransliterationResult,
+    transliterate_amharic_to_latin,
+    transliterate_token,
+)
 from fayda_mcp.matching.normalization import (
     REASON_DOB_MISMATCH,
     REASON_INVALID_DATE_FORMAT,
@@ -214,4 +225,13 @@ __all__ = [
     "REVIEW_REASON_MIXED_SCRIPT",
     "REVIEW_REASON_UNKNOWN_SCRIPT",
     "REVIEW_REASON_DIGITS_IN_NAME",
+    "AMHARIC_TRANSLITERATION_VERSION",
+    "TRANSLITERATION_SPEC_VERSION",
+    "DEFAULT_MAX_VARIANTS_PER_TOKEN",
+    "DEFAULT_MAX_TOTAL_VARIANTS",
+    "AMHARIC_FIDEL_TABLE",
+    "TokenTransliteration",
+    "TransliterationResult",
+    "transliterate_token",
+    "transliterate_amharic_to_latin",
 ]

@@ -19,9 +19,15 @@ from fayda_mcp.matching.calibration import CalibrationDataset, LabeledNamePair
 
 FIXTURES_SPEC_VERSION: str = "fixtures-v1"
 
-# Default path to the representative fixtures JSON file
-DEFAULT_FIXTURES_PATH: Path = (
+# Primary package data path and test fallback path
+PACKAGE_FIXTURES_PATH: Path = (
+    Path(__file__).resolve().parent / "data" / "representative_name_pairs.json"
+)
+TEST_FIXTURES_PATH: Path = (
     Path(__file__).resolve().parent.parent.parent.parent / "tests" / "fixtures" / "representative_name_pairs.json"
+)
+DEFAULT_FIXTURES_PATH: Path = (
+    PACKAGE_FIXTURES_PATH if PACKAGE_FIXTURES_PATH.exists() else TEST_FIXTURES_PATH
 )
 
 
@@ -174,7 +180,13 @@ def load_representative_fixtures(
     filepath: Optional[Path | str] = None,
 ) -> RepresentativeFixtureDataset:
     """Load representative Ethiopian name pair fixtures from JSON file."""
-    path = Path(filepath) if filepath is not None else DEFAULT_FIXTURES_PATH
+    if filepath is not None:
+        path = Path(filepath)
+    elif PACKAGE_FIXTURES_PATH.exists():
+        path = PACKAGE_FIXTURES_PATH
+    else:
+        path = TEST_FIXTURES_PATH
+
     if not path.exists():
         raise FileNotFoundError(f"Representative fixtures file not found at: {path}")
 

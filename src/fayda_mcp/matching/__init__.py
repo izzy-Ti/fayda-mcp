@@ -148,6 +148,17 @@ from fayda_mcp.matching.fixtures import (
     get_representative_pairs,
     load_representative_fixtures,
 )
+from fayda_mcp.matching.evaluation import (
+    EVALUATION_SPEC_VERSION,
+    ProfileEvaluationReport,
+    ReleaseGateCondition,
+    ReleaseGateReport,
+    SubgroupMetrics,
+    compute_partition_metrics,
+    evaluate_and_gate_release,
+    evaluate_profile_on_dataset,
+    evaluate_single_pair,
+)
 from fayda_mcp.matching.normalization import (
     REASON_DOB_MISMATCH,
     REASON_INVALID_DATE_FORMAT,
@@ -418,4 +429,13 @@ __all__ = [
     "RepresentativeFixtureDataset",
     "load_representative_fixtures",
     "get_representative_pairs",
+    "EVALUATION_SPEC_VERSION",
+    "SubgroupMetrics",
+    "ProfileEvaluationReport",
+    "ReleaseGateCondition",
+    "ReleaseGateReport",
+    "evaluate_single_pair",
+    "compute_partition_metrics",
+    "evaluate_profile_on_dataset",
+    "evaluate_and_gate_release",
 ]

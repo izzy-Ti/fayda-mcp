@@ -102,6 +102,14 @@ class FaydaConfig(BaseModel):
     jwks_stale_grace_seconds: float = Field(default=0.0, description="Grace period seconds past hard expiry where known keys may be used if refresh fails (default 0.0 = zero stale grace)")
     jwks_unknown_kid_cooldown_seconds: float = Field(default=30.0, description="Minimum seconds between synchronous refreshes triggered by unknown kids")
     jwks_negative_cache_ttl_seconds: float = Field(default=30.0, description="TTL in seconds for negative caching of unknown kids")
+    jwks_allow_single_key_fallback: bool = Field(
+        default=False,
+        description="Permit validating against single published JWKS public key if kid is missing from gateway cache",
+    )
+    dev_insecure_skip_signature_verification: bool = Field(
+        default=False,
+        description="DEVELOPMENT ONLY: Permit decoding claims without cryptographic signature check if provider signing key is absent from JWKS",
+    )
     storage_mode: str = Field(default="memory", description="Active storage backend: memory, redis-postgres, or redis")
     dob_source_calendar: str = Field(default="gregorian", description="Explicit calendar convention for DOB claim: 'gregorian' or 'ethiopic'")
     age_evaluation_timezone: str = Field(default="Africa/Addis_Ababa", description="Host evaluation timezone for age checks")
@@ -441,6 +449,18 @@ class FaydaConfig(BaseModel):
                 ).replace(",", " ").split()
                 if l.strip()
             ] or ["am", "en"],
+            jwks_allow_single_key_fallback=get_val(
+                f"{env_prefix}JWKS_ALLOW_SINGLE_KEY_FALLBACK",
+                "JWKS_ALLOW_SINGLE_KEY_FALLBACK",
+                default="false",
+            ).lower() in ("true", "1", "yes", "on"),
+            dev_insecure_skip_signature_verification=get_val(
+                f"{env_prefix}DEV_INSECURE_SKIP_SIGNATURE_VERIFICATION",
+                f"{env_prefix}DEV_SKIP_SIGNATURE_VERIFICATION",
+                "DEV_INSECURE_SKIP_SIGNATURE_VERIFICATION",
+                "DEV_SKIP_SIGNATURE_VERIFICATION",
+                default="false",
+            ).lower() in ("true", "1", "yes", "on"),
         )
 
     @classmethod

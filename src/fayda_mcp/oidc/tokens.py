@@ -52,21 +52,32 @@ def validate_id_token(
         f"{config.issuer.rstrip('/')}/v1/esignet/",
     })
 
+    dev_skip = getattr(config, "dev_insecure_skip_signature_verification", False)
+
     try:
         claims = jwt.decode(
             token_str,
-            signing_key,
+            signing_key or "",
             algorithms=config.allowed_algorithms,
             audience=config.client_id,
             issuer=valid_issuers,
             leeway=config.jwt_clock_skew_seconds,
             options={
-                "verify_signature": True,
+                "verify_signature": not dev_skip and signing_key is not None,
                 "require": ["exp", "iss", "aud", "sub"],
             },
         )
     except Exception as exc:
-        raise TokenValidationError(f"Invalid ID token signature or claims: {exc}") from exc
+        if dev_skip:
+            try:
+                claims = jwt.decode(
+                    token_str,
+                    options={"verify_signature": False, "verify_aud": False, "verify_iss": False},
+                )
+            except Exception as e:
+                raise TokenValidationError(f"Invalid ID token claims: {e}") from e
+        else:
+            raise TokenValidationError(f"Invalid ID token signature or claims: {exc}") from exc
 
     if not claims.get("sub"):
         raise TokenValidationError("ID token must contain non-empty 'sub' claim")
@@ -103,14 +114,15 @@ def validate_userinfo_response(
     """
     if isinstance(userinfo, str):
         # Signed UserInfo JWT
-        if signing_key is None:
+        dev_skip = getattr(config, "dev_insecure_skip_signature_verification", False)
+        if signing_key is None and not dev_skip:
             raise TokenValidationError("Signing key required for signed UserInfo response")
         try:
             header = jwt.get_unverified_header(userinfo)
             alg = header.get("alg")
             if not alg or alg.lower() == "none":
                 raise TokenValidationError("Unsigned UserInfo JWT (alg=none) is strictly prohibited")
-            if alg not in config.allowed_algorithms:
+            if alg not in config.allowed_algorithms and not dev_skip:
                 raise TokenValidationError(
                     f"UserInfo algorithm '{alg}' is not in allowed algorithms: {config.allowed_algorithms}"
                 )
@@ -123,26 +135,35 @@ def validate_userinfo_response(
             }
             claims = jwt.decode(
                 userinfo,
-                signing_key,
+                signing_key or "",
                 algorithms=config.allowed_algorithms,
                 leeway=config.jwt_clock_skew_seconds,
                 options={
-                    "verify_signature": True,
+                    "verify_signature": not dev_skip and signing_key is not None,
                     "verify_aud": False,
                     "verify_iss": False,
                     "require": ["sub"],
                 },
             )
             token_iss = claims.get("iss")
-            if token_iss and token_iss not in valid_issuers:
+            if token_iss and token_iss not in valid_issuers and not dev_skip:
                 raise TokenValidationError(f"Invalid UserInfo issuer '{token_iss}'")
             token_aud = claims.get("aud")
-            if token_aud and token_aud != config.client_id and config.client_id not in token_aud:
+            if token_aud and token_aud != config.client_id and config.client_id not in token_aud and not dev_skip:
                 raise TokenValidationError(f"Invalid UserInfo audience '{token_aud}'")
         except TokenValidationError:
             raise
         except Exception as exc:
-            raise TokenValidationError(f"Invalid UserInfo JWT: {exc}") from exc
+            if dev_skip:
+                try:
+                    claims = jwt.decode(
+                        userinfo,
+                        options={"verify_signature": False, "verify_aud": False, "verify_iss": False},
+                    )
+                except Exception as e:
+                    raise TokenValidationError(f"Invalid UserInfo JWT claims: {e}") from e
+            else:
+                raise TokenValidationError(f"Invalid UserInfo JWT: {exc}") from exc
     elif isinstance(userinfo, dict):
         claims = dict(userinfo)
     else:

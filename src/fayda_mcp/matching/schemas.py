@@ -86,6 +86,8 @@ class DetailsMatchingErrorCode(str, Enum):
     MISSING_CLAIMS = "matching_missing_claims"
     UNSUPPORTED_FIELD = "matching_unsupported_field"
     IDEMPOTENCY_CONFLICT = "matching_idempotency_conflict"
+    RATE_LIMIT_EXCEEDED = "matching_rate_limit_exceeded"
+    PRIVACY_VIOLATION = "matching_privacy_violation"
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +106,28 @@ class DetailsMatchingError(FaydaMCPError):
     ):
         code_str = code.value if isinstance(code, DetailsMatchingErrorCode) else str(code)
         super().__init__(message=message, code=code_str, details=details)
+
+
+class DetailsRateLimitExceededError(DetailsMatchingError):
+    """Raised when rate limit for details matching or verification is exceeded."""
+
+    def __init__(self, key: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=f"Rate limit exceeded for '{key}'",
+            code=DetailsMatchingErrorCode.RATE_LIMIT_EXCEEDED,
+            details=details,
+        )
+
+
+class DetailsPrivacyViolationError(DetailsMatchingError):
+    """Raised when private demographic, transliteration variant, phonetic code, or score leaks into agent output."""
+
+    def __init__(self, field: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=f"Privacy violation: sensitive field '{field}' is forbidden from agent/public output",
+            code=DetailsMatchingErrorCode.PRIVACY_VIOLATION,
+            details=details,
+        )
 
 
 class DetailsReferenceNotFoundError(DetailsMatchingError):

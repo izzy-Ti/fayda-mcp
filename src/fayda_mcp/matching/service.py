@@ -45,7 +45,9 @@ from fayda_mcp.matching.schemas import (
     DetailsMatchResult,
     DetailsMatchingError,
     DetailsMatchingErrorCode,
+    DetailsPrivacyViolationError,
     DetailsPurposeMismatchError,
+    DetailsRateLimitExceededError,
     DetailsReferenceExpiredError,
     DetailsReferenceNotFoundError,
     DetailsUserMismatchError,
@@ -54,6 +56,16 @@ from fayda_mcp.matching.schemas import (
     ExpectedDetailsSubmission,
     ExpectedDetailsSubmissionResponse,
 )
+from fayda_mcp.matching.phonetics import get_token_phonetic_codes
+from fayda_mcp.matching.privacy import (
+    BackendComparisonDetails,
+    MatchingRateLimiter,
+    assert_caller_user_binding,
+    assert_comparison_privacy_invariants,
+    assert_ttl_compliance,
+)
+from fayda_mcp.matching.scoring import compute_name_similarity_features
+from fayda_mcp.matching.transliteration import transliterate_token
 from fayda_mcp.matching.storage import (
     ExpectedDetailsStore,
     MemoryExpectedDetailsStore,
@@ -84,12 +96,14 @@ class DetailsMatchingService:
         default_profile: str = PROFILE_STRICT,
         allowed_profiles: Optional[Any] = None,
         allowed_languages: Optional[Any] = None,
+        rate_limiter: Optional[MatchingRateLimiter] = None,
     ) -> None:
         self.policy = policy or VerificationPolicy()
         self.encryptor = encryptor or DetailsEncryptor(key=encryption_key)
         self.default_profile = default_profile or PROFILE_STRICT
         self.allowed_profiles = list(allowed_profiles) if allowed_profiles is not None else list(SUPPORTED_MATCHING_PROFILES)
         self.allowed_languages = list(allowed_languages) if allowed_languages is not None else list(SUPPORTED_NAME_MATCHING_LANGUAGES)
+        self.rate_limiter = rate_limiter
 
         if store is not None:
             self.store = store
@@ -128,6 +142,14 @@ class DetailsMatchingService:
         if not any(scope in ctx.scopes for scope in permitted_scopes):
             raise AuthorizationError(
                 f"Caller '{ctx.principal_id}' denied authorization for 'verification:create'"
+            )
+
+        # 1b. Enforce caller & user rate limits
+        if self.rate_limiter:
+            self.rate_limiter.enforce_rate_limit(
+                tenant_id=ctx.tenant_id,
+                principal_id=ctx.principal_id,
+                application_user_ref=str(application_user_ref).strip() if application_user_ref else None,
             )
 
         # 2. Validate application_user_ref
@@ -561,6 +583,60 @@ class DetailsMatchingService:
 
         # 4. Save minimal outcome
         await self.store.save_match_result(clean_request_id, res, ttl_seconds=900)
+
+        # 5. Capture rich backend-only comparison details (kept backend-only by default)
+        if record and record.expected_details and record.expected_details.full_name:
+            exp_name = record.expected_details.full_name
+            prov_raw = str(claims.get("name") or claims.get("full_name") or "")
+
+            variants: List[str] = []
+            phonetic_codes: List[str] = []
+            for tok in exp_name.split():
+                try:
+                    tr = transliterate_token(tok)
+                    variants.extend(tr.variants)
+                except Exception:
+                    pass
+                try:
+                    pc = get_token_phonetic_codes(tok)
+                    if pc.double_metaphone_primary:
+                        phonetic_codes.append(pc.double_metaphone_primary)
+                    if pc.ethiopian_phonetic_code:
+                        phonetic_codes.append(pc.ethiopian_phonetic_code)
+                except Exception:
+                    pass
+
+            similarity_scores: Dict[str, float] = {}
+            if prov_raw:
+                try:
+                    nsf = compute_name_similarity_features(exp_name, prov_raw)
+                    similarity_scores["overall_similarity_score"] = nsf.overall_similarity_score
+                except Exception:
+                    pass
+
+            cmp_details = BackendComparisonDetails(
+                request_id=clean_request_id,
+                tenant_id=record.tenant_id,
+                principal_id=record.principal_id,
+                application_user_ref=record.application_user_ref,
+                expected_name=exp_name,
+                provider_name=prov_raw,
+                matching_profile=active_profile,
+                variants=list(dict.fromkeys(variants))[:20],
+                phonetic_codes=list(dict.fromkeys(phonetic_codes))[:20],
+                similarity_scores=similarity_scores,
+                name_match_status=name_match_status or overall_status,
+                method=name_match_method,
+                reason=name_match_reason,
+                created_at=now_iso,
+                expires_at=expires_at or record.expires_at,
+                evidence_ref=f"ev_{clean_request_id}",
+            )
+            await self.store.save_backend_comparison(clean_request_id, cmp_details, ttl_seconds=900)
+
+        # 6. Verify privacy invariants: public/agent output contains zero names, variants, phonetic codes, or scores
+        assert_comparison_privacy_invariants(res.model_dump())
+
         return res
 
     async def save_match_result(
@@ -582,3 +658,27 @@ class DetailsMatchingService:
     ) -> Optional[DetailsMatchResult]:
         """Retrieve evaluated minimal details match outcome by request_id."""
         return await self.store.get_match_result(str(request_id).strip())
+
+    async def get_backend_comparison(
+        self,
+        request_id: str,
+        context: Optional[CallerContext] = None,
+        validate_caller: bool = True,
+    ) -> Optional[BackendComparisonDetails]:
+        """Retrieve rich comparison trace kept backend-only, enforcing caller ownership."""
+        clean_request_id = str(request_id).strip()
+        cmp = await self.store.get_backend_comparison(clean_request_id)
+        if cmp is None:
+            return None
+        if validate_caller and context is not None:
+            if context.tenant_id != cmp.tenant_id:
+                raise DetailsCallerMismatchError(clean_request_id)
+            if (
+                context.principal_id != cmp.principal_id
+                and cmp.principal_id not in ("anonymous", "backend_service")
+                and context.principal_id not in ("anonymous", "backend_service")
+                and "admin" not in context.scopes
+                and "*" not in context.scopes
+            ):
+                raise DetailsCallerMismatchError(clean_request_id)
+        return cmp

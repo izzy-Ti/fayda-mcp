@@ -129,6 +129,18 @@ from fayda_mcp.matching.protection import (
     assert_strong_name_never_cancels_missing_evidence,
     evaluate_protected_checks,
 )
+from fayda_mcp.matching.privacy import (
+    DEFAULT_RATE_LIMIT_REQUESTS,
+    DEFAULT_RATE_LIMIT_WINDOW_SECONDS,
+    FORBIDDEN_LEAK_FIELDS,
+    PRIVACY_SPEC_VERSION,
+    BackendComparisonDetails,
+    MatchingRateLimiter,
+    assert_caller_user_binding,
+    assert_comparison_privacy_invariants,
+    assert_ttl_compliance,
+    sanitize_matching_result,
+)
 from fayda_mcp.matching.normalization import (
     REASON_DOB_MISMATCH,
     REASON_INVALID_DATE_FORMAT,
@@ -384,4 +396,14 @@ __all__ = [
     "assert_strong_name_never_cancels_mismatch",
     "assert_strong_name_never_cancels_missing_evidence",
     "evaluate_protected_checks",
+    "PRIVACY_SPEC_VERSION",
+    "DEFAULT_RATE_LIMIT_REQUESTS",
+    "DEFAULT_RATE_LIMIT_WINDOW_SECONDS",
+    "FORBIDDEN_LEAK_FIELDS",
+    "BackendComparisonDetails",
+    "MatchingRateLimiter",
+    "assert_caller_user_binding",
+    "assert_ttl_compliance",
+    "assert_comparison_privacy_invariants",
+    "sanitize_matching_result",
 ]

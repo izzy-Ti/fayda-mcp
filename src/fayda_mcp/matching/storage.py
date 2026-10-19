@@ -66,6 +66,22 @@ class ExpectedDetailsStore(Protocol):
         """Retrieve evaluated minimal details match outcome by request_id."""
         ...
 
+    async def save_backend_comparison(
+        self,
+        request_id: str,
+        comparison: Any,
+        ttl_seconds: int,
+    ) -> None:
+        """Store rich comparison details backend-only with expiration TTL."""
+        ...
+
+    async def get_backend_comparison(
+        self,
+        request_id: str,
+    ) -> Optional[Any]:
+        """Retrieve backend-only comparison details by request_id."""
+        ...
+
     async def close(self) -> None:
         """Close underlying connection pools and resources."""
         ...
@@ -80,6 +96,7 @@ class MemoryExpectedDetailsStore:
         self._expirations: Dict[str, float] = {}
         self._request_index: Dict[str, str] = {}
         self._match_results: Dict[str, Tuple[Dict[str, Any], float]] = {}
+        self._backend_comparisons: Dict[str, Tuple[Dict[str, Any], float]] = {}
 
     async def save_expected_details(
         self,
@@ -169,11 +186,36 @@ class MemoryExpectedDetailsStore:
             return None
         return DetailsMatchResult(**raw)
 
+    async def save_backend_comparison(
+        self,
+        request_id: str,
+        comparison: Any,
+        ttl_seconds: int,
+    ) -> None:
+        raw = comparison.model_dump() if hasattr(comparison, "model_dump") else dict(comparison)
+        expires_at = time.time() + max(1, ttl_seconds)
+        self._backend_comparisons[request_id] = (raw, expires_at)
+
+    async def get_backend_comparison(
+        self,
+        request_id: str,
+    ) -> Optional[Any]:
+        entry = self._backend_comparisons.get(request_id)
+        if not entry:
+            return None
+        raw, exp = entry
+        if time.time() >= exp:
+            self._backend_comparisons.pop(request_id, None)
+            return None
+        from fayda_mcp.matching.privacy import BackendComparisonDetails
+        return BackendComparisonDetails(**raw)
+
     async def close(self) -> None:
         self._records.clear()
         self._expirations.clear()
         self._request_index.clear()
         self._match_results.clear()
+        self._backend_comparisons.clear()
 
 
 class SessionExpectedDetailsStore:
@@ -256,6 +298,9 @@ class SessionExpectedDetailsStore:
     def _res_key(self, request_id: str) -> str:
         return f"{self._prefix}res:{request_id}"
 
+    def _cmp_key(self, request_id: str) -> str:
+        return f"{self._prefix}cmp:{request_id}"
+
     async def save_match_result(
         self,
         request_id: str,
@@ -276,6 +321,29 @@ class SessionExpectedDetailsStore:
         if not data:
             return None
         return DetailsMatchResult(**data)
+
+    async def save_backend_comparison(
+        self,
+        request_id: str,
+        comparison: Any,
+        ttl_seconds: int,
+    ) -> None:
+        raw = comparison.model_dump() if hasattr(comparison, "model_dump") else dict(comparison)
+        await self._session_store.save_session(
+            self._cmp_key(request_id),
+            raw,
+            max(1, ttl_seconds),
+        )
+
+    async def get_backend_comparison(
+        self,
+        request_id: str,
+    ) -> Optional[Any]:
+        data = await self._session_store.get_session(self._cmp_key(request_id))
+        if not data:
+            return None
+        from fayda_mcp.matching.privacy import BackendComparisonDetails
+        return BackendComparisonDetails(**data)
 
     async def close(self) -> None:
         await self._session_store.close()

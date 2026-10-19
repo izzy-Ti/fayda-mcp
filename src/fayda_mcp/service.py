@@ -127,6 +127,9 @@ class FaydaVerificationService:
             policy=self.policy,
             session_store=self.sessions,
             encryption_key=encryption_key,
+            default_profile=self.config.name_matching_profile,
+            allowed_profiles=self.config.name_matching_allowed_profiles,
+            allowed_languages=self.config.name_matching_languages,
         )
 
     async def __aenter__(self) -> "FaydaVerificationService":
@@ -866,9 +869,18 @@ class FaydaVerificationService:
             if not id_token_str:
                 raise AuthenticationError("Token response missing id_token")
 
-            signing_key = await self.jwks.get_signing_key_for_token(
-                id_token_str, client=self._http.client
-            )
+            dev_skip = getattr(self.config, "dev_insecure_skip_signature_verification", False)
+            try:
+                signing_key = await self.jwks.get_signing_key_for_token(
+                    id_token_str, client=self._http.client
+                )
+            except Exception as jwks_err:
+                if dev_skip:
+                    logger.warning("DEV MODE: Key resolution failed (%s); proceeding with unverified decode", jwks_err)
+                    signing_key = None
+                else:
+                    raise
+
             id_claims = validate_id_token(
                 token_str=id_token_str,
                 config=self.config,
@@ -885,9 +897,16 @@ class FaydaVerificationService:
                 userinfo_signing_key = None
                 if isinstance(raw_userinfo, str):
                     # UserInfo response is a signed JWT; resolve signing key separately by its own kid/alg
-                    userinfo_signing_key = await self.jwks.get_signing_key_for_token(
-                        raw_userinfo, client=self._http.client
-                    )
+                    try:
+                        userinfo_signing_key = await self.jwks.get_signing_key_for_token(
+                            raw_userinfo, client=self._http.client
+                        )
+                    except Exception as u_err:
+                        if dev_skip:
+                            logger.warning("DEV MODE: UserInfo key resolution failed (%s); proceeding with unverified decode", u_err)
+                            userinfo_signing_key = None
+                        else:
+                            raise
                 userinfo_claims = validate_userinfo_response(
                     userinfo=raw_userinfo,
                     config=self.config,
@@ -1314,6 +1333,13 @@ class FaydaVerificationService:
             matching_status=matching_status,
             matches=record.get("matches", {}),
             comparison_policy_version=record.get("comparison_policy_version", DEFAULT_COMPARISON_POLICY_VERSION),
+            matching_profile=record.get("matching_profile", "strict"),
+            profile_version=record.get("profile_version"),
+            name_match_status=record.get("name_match_status"),
+            name_match_method=record.get("name_match_method") or record.get("method"),
+            name_match_reason=record.get("name_match_reason") or record.get("reason"),
+            method=record.get("method") or record.get("name_match_method"),
+            reason=record.get("reason") or record.get("name_match_reason"),
             required_fields=record.get("required_fields", []),
             checked_at=record.get("checked_at") or record.get("verified_at"),
             expires_at=str(exp_val) if exp_val else None,

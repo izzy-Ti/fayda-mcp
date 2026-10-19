@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import re
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 import unicodedata
+from pydantic import BaseModel, ConfigDict, Field
 
 from fayda_mcp.localization.calendars import (
     CalendarError,
@@ -20,6 +21,8 @@ from fayda_mcp.localization.calendars import (
     parse_date_explicit,
 )
 from fayda_mcp.matching.claims import extract_approved_matching_claims
+from fayda_mcp.matching.detection import InputDetectionResult, detect_input_script
+from fayda_mcp.matching.profiles import PROFILE_ETHIOPIAN_NAME_V1, PROFILE_STRICT
 from fayda_mcp.matching.schemas import (
     MATCH_FIELD_DATE_OF_BIRTH,
     MATCH_FIELD_FULL_NAME,
@@ -37,10 +40,92 @@ REASON_PROVIDER_CLAIM_UNAVAILABLE = "provider_claim_unavailable"
 REASON_UNSUPPORTED_CALENDAR = "unsupported_calendar"
 
 
-def normalize_name(name: Optional[str]) -> Optional[str]:
-    """Normalize a name using Unicode NFC, full case-folding, and collapsed whitespace.
+class NormalizedName(BaseModel):
+    """Structured normalized name representation preserving originals, tokens, and canonical string.
 
-    Preserves original script (no transliteration) and token sequence (no reordering).
+    Per guide5 Task 02:
+    - Normalizes safely with Unicode NFC, Latin case-folding, and collapsed whitespace.
+    - Preserves original raw text and original raw tokens.
+    - Preserves token order (no permutation or reordering).
+    - Preserves meaningful letters (consonants, doubled consonants, vowels, glottal apostrophes).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    original: str = Field(..., description="Original raw citizen name string prior to normalization")
+    normalized: str = Field(..., description="Canonical NFC, Latin case-folded, whitespace-collapsed string")
+    tokens: List[str] = Field(default_factory=list, description="Ordered list of normalized name tokens")
+    original_tokens: List[str] = Field(default_factory=list, description="Ordered list of raw original name tokens")
+    detection: Optional[InputDetectionResult] = Field(
+        default=None,
+        description="Script detection, character validation, and invisible/control review flags",
+    )
+
+    def __str__(self) -> str:
+        return self.normalized
+
+    @property
+    def token_count(self) -> int:
+        return len(self.tokens)
+
+
+def normalize_name_safely(name: Optional[str]) -> Optional[NormalizedName]:
+    """Safely normalize a name using Unicode NFC, Latin case-folding, and collapsed whitespace.
+
+    Preserves:
+    - Original raw string and original token components.
+    - Strict token sequence and order (e.g. given name, father's name, grandfather's name).
+    - Meaningful letters, apostrophes/glottals, and word components without destructive stripping.
+
+    Args:
+        name: Raw citizen name string.
+
+    Returns:
+        NormalizedName instance or None if name is empty or whitespace-only.
+    """
+    if name is None:
+        return None
+
+    raw_str = str(name)
+    stripped = raw_str.strip()
+    if not stripped:
+        return None
+
+    # 1. Unicode NFC canonical decomposition followed by canonical composition
+    nfc_original = unicodedata.normalize("NFC", stripped)
+
+    # 2. Latin case-folding (converts Latin characters to canonical lowercase; no-op on Ethiopic)
+    folded = nfc_original.casefold()
+
+    # 3. Collapse whitespace and Ethiopic word separators (\u1361) to single space
+    collapsed = re.sub(r"[\s\u1361]+", " ", folded).strip()
+    if not collapsed:
+        return None
+
+    # 4. Extract ordered tokens strictly preserving sequence
+    tokens = [t for t in collapsed.split(" ") if t]
+
+    # 5. Extract corresponding original tokens from nfc_original preserving exact original casing
+    original_collapsed = re.sub(r"[\s\u1361]+", " ", nfc_original).strip()
+    original_tokens = [t for t in original_collapsed.split(" ") if t]
+
+    # 6. Detect script and flag unsupported/invisible/control characters
+    detection = detect_input_script(raw_str)
+
+    return NormalizedName(
+        original=raw_str,
+        normalized=collapsed,
+        tokens=tokens,
+        original_tokens=original_tokens,
+        detection=detection,
+    )
+
+
+def normalize_name(name: Optional[str]) -> Optional[str]:
+    """Normalize a name using Unicode NFC, Latin case-folding, and collapsed whitespace.
+
+    Preserves original script (no transliteration), token sequence (no reordering),
+    and meaningful letters.
 
     Args:
         name: Raw citizen name string.
@@ -48,35 +133,27 @@ def normalize_name(name: Optional[str]) -> Optional[str]:
     Returns:
         Canonical string or None if input is empty/None.
     """
-    if name is None:
-        return None
-
-    s = str(name).strip()
-    if not s:
-        return None
-
-    # 1. Unicode NFC canonical decomposition followed by canonical composition
-    nfc_str = unicodedata.normalize("NFC", s)
-
-    # 2. Case-folding (stronger and more comprehensive than lower() for Unicode)
-    folded = nfc_str.casefold()
-
-    # 3. Collapse multiple whitespace characters into a single space
-    collapsed = re.sub(r"\s+", " ", folded).strip()
-
-    return collapsed or None
+    norm = normalize_name_safely(name)
+    return norm.normalized if norm is not None else None
 
 
 def compare_names(
     expected_name: Optional[str],
     provider_name: Optional[str],
+    matching_profile: str = PROFILE_STRICT,
+    language: Optional[str] = None,
 ) -> Tuple[FieldMatchOutcome, Optional[str]]:
     """Deterministically compare expected and provider names.
 
     Rules:
     - If either is missing or empty: returns (None, reason).
+    - If matching_profile == PROFILE_ETHIOPIAN_NAME_V1:
+        Evaluates uncertainty (unknown language, unsupported characters, ambiguous transliteration).
+        If uncertain: returns (None, reason).
+        Checks approved variations and transliteration equivalents.
+        If approved: returns (True, None).
     - If normalized names match exactly: returns (True, None).
-    - If normalized names differ (different spelling, transposed order, or different script): returns (False, 'name_mismatch').
+    - If normalized names differ: returns (False, 'name_mismatch').
 
     Returns:
         Tuple of (FieldMatchOutcome, Optional[reason_code])
@@ -87,15 +164,36 @@ def compare_names(
     if not expected_name or not str(expected_name).strip():
         return None, "missing_expected_name"
 
-    norm_exp = normalize_name(expected_name)
-    norm_prov = normalize_name(provider_name)
+    # Evaluate uncertainty and name structure under ethiopian_name_v1 profile
+    if matching_profile == PROFILE_ETHIOPIAN_NAME_V1:
+        from fayda_mcp.matching.uncertainty import evaluate_name_uncertainty
+        unc = evaluate_name_uncertainty(
+            expected_name=expected_name,
+            provider_name=provider_name,
+            language=language,
+            matching_profile=matching_profile,
+        )
+        if unc.has_uncertainty:
+            return None, unc.reason
+
+        from fayda_mcp.matching.review import evaluate_review_outcomes
+        review_res = evaluate_review_outcomes(expected_name, provider_name)
+        if review_res.matches_full_name is None:
+            return None, review_res.reason
+        if review_res.matches_full_name is False:
+            return False, review_res.reason or REASON_NAME_MISMATCH
+        return True, None
+
+    norm_exp = normalize_name_safely(expected_name)
+    norm_prov = normalize_name_safely(provider_name)
 
     if norm_exp is None or norm_prov is None:
         return None, REASON_PROVIDER_CLAIM_UNAVAILABLE
 
-    if norm_exp == norm_prov:
+    if norm_exp.normalized == norm_prov.normalized:
         return True, None
 
+    # Strict profile requires exact normalized match
     return False, REASON_NAME_MISMATCH
 
 
@@ -197,6 +295,7 @@ def evaluate_details_matching(
     expected_details: ExpectedDetails,
     claims: Dict[str, Any],
     provider_dob_calendar: str = "gregorian",
+    matching_profile: Optional[str] = None,
 ) -> Tuple[Dict[str, FieldMatchOutcome], Dict[str, str], Literal["matched", "mismatched", "unavailable"]]:
     """Execute complete deterministic comparison between expectations and provider claims.
 
@@ -204,6 +303,7 @@ def evaluate_details_matching(
         expected_details: ExpectedDetails specification.
         claims: Normalized claims from authorized provider token/userinfo.
         provider_dob_calendar: Calendar convention for provider's DOB claim ('gregorian' or 'ethiopic').
+        matching_profile: Optional explicit matching profile override.
 
     Returns:
         Tuple of:
@@ -211,6 +311,8 @@ def evaluate_details_matching(
             - reasons: Dict mapping field names to safe reason codes if mismatch or unavailable
             - overall_status: Overall outcome ('matched', 'mismatched', or 'unavailable')
     """
+    effective_profile = matching_profile or expected_details.matching_profile or PROFILE_STRICT
+
     extracted_claims, unavailable_reasons = extract_approved_matching_claims(
         claims=claims,
         expected_details=expected_details,
@@ -222,7 +324,12 @@ def evaluate_details_matching(
     # 1. Full name comparison if expected
     if expected_details.full_name is not None and expected_details.full_name.strip():
         prov_name = extracted_claims.get(MATCH_FIELD_FULL_NAME)
-        outcome, reason = compare_names(expected_details.full_name, prov_name)
+        outcome, reason = compare_names(
+            expected_details.full_name,
+            prov_name,
+            matching_profile=effective_profile,
+            language=expected_details.language,
+        )
         matches[MATCH_FIELD_FULL_NAME] = outcome
         if reason:
             reasons[MATCH_FIELD_FULL_NAME] = reason

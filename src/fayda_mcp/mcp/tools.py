@@ -132,7 +132,10 @@ def register_tools(
 
         Returns matching_status ('matched', 'mismatched', 'unavailable', or 'pending'),
         tri-state field matches (true, false, null), comparison policy version ('details-v1'),
-        checked timestamp, and safe reasons.
+        profile_version, name_match_status ('exact', 'approved_equivalent', 'review_required', 'mismatch', 'unavailable'),
+        method ('exact_normalized', 'transliteration', 'phonetic', 'approved_variation'),
+        reason, checked timestamp, and safe reasons map.
+        Phonetic-only review keeps matches.full_name=null.
         Strictly excludes citizen demographics (names, DOBs), FANs, and provider tokens.
 
         Args:

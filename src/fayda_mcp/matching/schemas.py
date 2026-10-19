@@ -10,6 +10,34 @@ from typing import Any, Dict, List, Literal, Optional, Set, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from fayda_mcp.exceptions import FaydaMCPError
+from fayda_mcp.matching.profiles import (
+    DEFAULT_MATCHING_PROFILE,
+    DEFAULT_NAME_MATCHING_LANGUAGE,
+    LANGUAGE_AMHARIC,
+    LANGUAGE_ENGLISH,
+    METHOD_APPROVED_VARIATION,
+    METHOD_EXACT_NORMALIZED,
+    METHOD_PHONETIC,
+    METHOD_TRANSLITERATION,
+    NAME_MATCH_APPROVED_EQUIVALENT,
+    NAME_MATCH_EXACT,
+    NAME_MATCH_MISMATCH,
+    NAME_MATCH_REVIEW_REQUIRED,
+    NAME_MATCH_UNAVAILABLE,
+    PROFILE_ETHIOPIAN_NAME_V1,
+    PROFILE_STRICT,
+    SUPPORTED_MATCHING_PROFILES,
+    SUPPORTED_NAME_MATCH_STATUSES,
+    SUPPORTED_NAME_MATCHING_LANGUAGES,
+    MatchingProfile,
+    MatchingProfileSpec,
+    NameMatchingLanguage,
+    NameMatchMethod,
+    NameMatchStatus,
+    get_profile_spec,
+    validate_matching_language,
+    validate_matching_profile,
+)
 
 # ---------------------------------------------------------------------------
 # Constants & Versions
@@ -58,6 +86,8 @@ class DetailsMatchingErrorCode(str, Enum):
     MISSING_CLAIMS = "matching_missing_claims"
     UNSUPPORTED_FIELD = "matching_unsupported_field"
     IDEMPOTENCY_CONFLICT = "matching_idempotency_conflict"
+    RATE_LIMIT_EXCEEDED = "matching_rate_limit_exceeded"
+    PRIVACY_VIOLATION = "matching_privacy_violation"
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +106,28 @@ class DetailsMatchingError(FaydaMCPError):
     ):
         code_str = code.value if isinstance(code, DetailsMatchingErrorCode) else str(code)
         super().__init__(message=message, code=code_str, details=details)
+
+
+class DetailsRateLimitExceededError(DetailsMatchingError):
+    """Raised when rate limit for details matching or verification is exceeded."""
+
+    def __init__(self, key: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=f"Rate limit exceeded for '{key}'",
+            code=DetailsMatchingErrorCode.RATE_LIMIT_EXCEEDED,
+            details=details,
+        )
+
+
+class DetailsPrivacyViolationError(DetailsMatchingError):
+    """Raised when private demographic, transliteration variant, phonetic code, or score leaks into agent output."""
+
+    def __init__(self, field: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=f"Privacy violation: sensitive field '{field}' is forbidden from agent/public output",
+            code=DetailsMatchingErrorCode.PRIVACY_VIOLATION,
+            details=details,
+        )
 
 
 class DetailsReferenceNotFoundError(DetailsMatchingError):
@@ -174,6 +226,38 @@ class ExpectedDetails(BaseModel):
         default=None,
         description="List of fields that MUST match for overall outcome ('full_name', 'date_of_birth')",
     )
+    matching_profile: Optional[str] = Field(
+        default=None,
+        description="Host-chosen matching profile ('strict' or 'ethiopian_name_v1'). If None, falls back to host config default ('strict').",
+    )
+    language: Optional[str] = Field(
+        default=None,
+        description="Host-specified language code ('am' or 'en') for name matching.",
+    )
+
+    @field_validator("matching_profile")
+    @classmethod
+    def validate_profile(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v_clean = v.strip().lower()
+        if v_clean not in SUPPORTED_MATCHING_PROFILES:
+            raise ValueError(
+                f"Unsupported matching profile '{v}'. Must be one of {list(SUPPORTED_MATCHING_PROFILES)}."
+            )
+        return v_clean
+
+    @field_validator("language")
+    @classmethod
+    def validate_lang(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v_clean = v.strip().lower()
+        if v_clean not in SUPPORTED_NAME_MATCHING_LANGUAGES:
+            raise ValueError(
+                f"Unsupported name matching language '{v}'. Must be one of {list(SUPPORTED_NAME_MATCHING_LANGUAGES)}."
+            )
+        return v_clean
 
     @field_validator("dob_calendar")
     @classmethod
@@ -283,6 +367,14 @@ class ExpectedDetailsRecord(BaseModel):
         default=None,
         description="Opaque verification request_id once bound by start tool",
     )
+    matching_profile: str = Field(
+        default=PROFILE_STRICT,
+        description="Active matching profile bound to this record ('strict' or 'ethiopian_name_v1')",
+    )
+    language: Optional[str] = Field(
+        default=None,
+        description="Bound language code ('am' or 'en')",
+    )
 
     @model_validator(mode="after")
     def validate_details_presence(self) -> "ExpectedDetailsRecord":
@@ -378,6 +470,50 @@ class DetailsMatchResult(BaseModel):
         default=None,
         description="Machine-readable error code if matching failed",
     )
+    matching_profile: str = Field(
+        default=PROFILE_STRICT,
+        description="Matching profile applied ('strict' or 'ethiopian_name_v1')",
+    )
+    profile_version: Optional[str] = Field(
+        default=None,
+        description="Version of the matching profile/algorithm",
+    )
+    name_match_status: Optional[str] = Field(
+        default=None,
+        description="Detailed name match outcome: 'exact', 'approved_equivalent', 'review_required', 'mismatch', 'unavailable'",
+    )
+    name_match_method: Optional[str] = Field(
+        default=None,
+        description="Method used for name comparison ('exact_normalized', 'transliteration', 'phonetic', etc.)",
+    )
+    name_match_reason: Optional[str] = Field(
+        default=None,
+        description="Safe machine-readable reason code for name matching outcome",
+    )
+    method: Optional[str] = Field(
+        default=None,
+        description="Comparison method ('exact_normalized', 'transliteration', 'phonetic', 'approved_variation')",
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="Safe machine-readable reason code for matching outcome",
+    )
+
+    @model_validator(mode="after")
+    def sync_method_and_reason(self) -> "DetailsMatchResult":
+        # Synchronize method and name_match_method
+        m = self.method or self.name_match_method
+        if m is not None:
+            object.__setattr__(self, "method", m)
+            object.__setattr__(self, "name_match_method", m)
+
+        # Synchronize reason and name_match_reason
+        r = self.reason or self.name_match_reason
+        if r is not None:
+            object.__setattr__(self, "reason", r)
+            object.__setattr__(self, "name_match_reason", r)
+
+        return self
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,18 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(line_buffering=True, write_through=True)
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(line_buffering=True, write_through=True)
+    except Exception:
+        pass
+
+
 
 def load_env_if_requested(env_file: Optional[str]) -> None:
     """Explicitly load environment variables from file if requested.
@@ -363,6 +375,11 @@ def handle_run(args: argparse.Namespace) -> int:
 
         if transport == "stdio":
             # Under stdio transport, stdout is reserved strictly for MCP JSON-RPC protocol
+            if hasattr(sys.stdout, "reconfigure"):
+                try:
+                    sys.stdout.reconfigure(line_buffering=True, write_through=True)
+                except Exception:
+                    pass
             server.run(transport="stdio", show_banner=False)
             return 0
         elif transport == "http":

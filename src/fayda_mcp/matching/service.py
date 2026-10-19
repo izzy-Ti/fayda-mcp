@@ -10,10 +10,34 @@ from fayda_mcp.exceptions import (
     PolicyViolationError,
 )
 from fayda_mcp.matching.crypto import DetailsEncryptor
-from fayda_mcp.matching.normalization import evaluate_details_matching
+from fayda_mcp.matching.normalization import (
+    evaluate_details_matching,
+    normalize_name_safely,
+)
+from fayda_mcp.matching.profiles import (
+    METHOD_APPROVED_VARIATION,
+    METHOD_EXACT_NORMALIZED,
+    METHOD_PHONETIC,
+    METHOD_TRANSLITERATION,
+    NAME_MATCH_APPROVED_EQUIVALENT,
+    NAME_MATCH_EXACT,
+    NAME_MATCH_MISMATCH,
+    NAME_MATCH_REVIEW_REQUIRED,
+    NAME_MATCH_UNAVAILABLE,
+    PROFILE_ETHIOPIAN_NAME_V1,
+    PROFILE_STRICT,
+    SUPPORTED_MATCHING_PROFILES,
+    SUPPORTED_NAME_MATCHING_LANGUAGES,
+    get_profile_spec,
+    validate_matching_language,
+    validate_matching_profile,
+)
+from fayda_mcp.matching.review import evaluate_review_outcomes
+from fayda_mcp.matching.variations import is_approved_name_variation
 from fayda_mcp.matching.schemas import (
     DEFAULT_COMPARISON_POLICY_VERSION,
     DEFAULT_EXPECTED_DETAILS_TTL_SECONDS,
+    MATCH_FIELD_FULL_NAME,
     MAX_EXPECTED_DETAILS_TTL_SECONDS,
     MIN_EXPECTED_DETAILS_TTL_SECONDS,
     DetailsAlreadyBoundError,
@@ -21,7 +45,9 @@ from fayda_mcp.matching.schemas import (
     DetailsMatchResult,
     DetailsMatchingError,
     DetailsMatchingErrorCode,
+    DetailsPrivacyViolationError,
     DetailsPurposeMismatchError,
+    DetailsRateLimitExceededError,
     DetailsReferenceExpiredError,
     DetailsReferenceNotFoundError,
     DetailsUserMismatchError,
@@ -30,6 +56,16 @@ from fayda_mcp.matching.schemas import (
     ExpectedDetailsSubmission,
     ExpectedDetailsSubmissionResponse,
 )
+from fayda_mcp.matching.phonetics import get_token_phonetic_codes
+from fayda_mcp.matching.privacy import (
+    BackendComparisonDetails,
+    MatchingRateLimiter,
+    assert_caller_user_binding,
+    assert_comparison_privacy_invariants,
+    assert_ttl_compliance,
+)
+from fayda_mcp.matching.scoring import compute_name_similarity_features
+from fayda_mcp.matching.transliteration import transliterate_token
 from fayda_mcp.matching.storage import (
     ExpectedDetailsStore,
     MemoryExpectedDetailsStore,
@@ -57,9 +93,17 @@ class DetailsMatchingService:
         session_store: Optional[SessionStore] = None,
         encryptor: Optional[DetailsEncryptor] = None,
         encryption_key: Optional[Union[str, bytes]] = None,
+        default_profile: str = PROFILE_STRICT,
+        allowed_profiles: Optional[Any] = None,
+        allowed_languages: Optional[Any] = None,
+        rate_limiter: Optional[MatchingRateLimiter] = None,
     ) -> None:
         self.policy = policy or VerificationPolicy()
         self.encryptor = encryptor or DetailsEncryptor(key=encryption_key)
+        self.default_profile = default_profile or PROFILE_STRICT
+        self.allowed_profiles = list(allowed_profiles) if allowed_profiles is not None else list(SUPPORTED_MATCHING_PROFILES)
+        self.allowed_languages = list(allowed_languages) if allowed_languages is not None else list(SUPPORTED_NAME_MATCHING_LANGUAGES)
+        self.rate_limiter = rate_limiter
 
         if store is not None:
             self.store = store
@@ -100,6 +144,14 @@ class DetailsMatchingService:
                 f"Caller '{ctx.principal_id}' denied authorization for 'verification:create'"
             )
 
+        # 1b. Enforce caller & user rate limits
+        if self.rate_limiter:
+            self.rate_limiter.enforce_rate_limit(
+                tenant_id=ctx.tenant_id,
+                principal_id=ctx.principal_id,
+                application_user_ref=str(application_user_ref).strip() if application_user_ref else None,
+            )
+
         # 2. Validate application_user_ref
         if not application_user_ref or not str(application_user_ref).strip():
             raise DetailsMatchingError(
@@ -127,6 +179,24 @@ class DetailsMatchingService:
                 DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
             )
 
+        # 4b. Validate matching profile and language against host configuration
+        target_profile = details_model.matching_profile or self.default_profile
+        try:
+            validated_profile = validate_matching_profile(target_profile, allowed_profiles=self.allowed_profiles)
+        except ValueError as e:
+            raise DetailsMatchingError(
+                str(e),
+                DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
+            ) from e
+
+        try:
+            validated_lang = validate_matching_language(details_model.language, allowed_languages=self.allowed_languages)
+        except ValueError as e:
+            raise DetailsMatchingError(
+                str(e),
+                DetailsMatchingErrorCode.INVALID_EXPECTATIONS,
+            ) from e
+
         # 5. Bound and enforce short TTL
         clamped_ttl = max(
             MIN_EXPECTED_DETAILS_TTL_SECONDS,
@@ -149,6 +219,8 @@ class DetailsMatchingService:
             created_at=now.isoformat(),
             expires_at=expires_at.isoformat(),
             bound_request_id=None,
+            matching_profile=validated_profile,
+            language=validated_lang,
         )
 
         # 8. Persist into expected details store with short TTL and authenticated encryption
@@ -270,6 +342,8 @@ class DetailsMatchingService:
             created_at=record.created_at,
             expires_at=record.expires_at,
             bound_request_id=clean_request_id,
+            matching_profile=record.matching_profile,
+            language=record.language,
         )
 
         await self.store.save_expected_details(ref, updated_record, max(1, remaining_ttl))
@@ -354,6 +428,13 @@ class DetailsMatchingService:
             except Exception:
                 record_error_reason = "details_reference_not_found"
 
+        active_profile = (record.matching_profile if record else None) or self.default_profile
+        try:
+            profile_spec = get_profile_spec(active_profile)
+            profile_version = profile_spec.version
+        except Exception:
+            profile_version = "details-v1"
+
         if record is None:
             safe_reason = record_error_reason or "details_reference_not_found"
             res = DetailsMatchResult(
@@ -362,6 +443,8 @@ class DetailsMatchingService:
                 matching_status="unavailable",
                 matches={},
                 comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                matching_profile=active_profile,
+                profile_version=profile_version,
                 required_fields=[],
                 checked_at=now_iso,
                 expires_at=expires_at,
@@ -380,6 +463,8 @@ class DetailsMatchingService:
                 matching_status="unavailable",
                 matches={},
                 comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                matching_profile=active_profile,
+                profile_version=profile_version,
                 required_fields=list(record.expected_details.required_fields or []) if record.expected_details else [],
                 checked_at=now_iso,
                 expires_at=expires_at or record.expires_at,
@@ -397,6 +482,8 @@ class DetailsMatchingService:
                 matching_status="unavailable",
                 matches={},
                 comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                matching_profile=active_profile,
+                profile_version=profile_version,
                 required_fields=list(record.expected_details.required_fields or []) if record.expected_details else [],
                 checked_at=now_iso,
                 expires_at=expires_at or record.expires_at,
@@ -414,6 +501,8 @@ class DetailsMatchingService:
                 matching_status="unavailable",
                 matches={},
                 comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+                matching_profile=active_profile,
+                profile_version=profile_version,
                 required_fields=[],
                 checked_at=now_iso,
                 expires_at=expires_at or record.expires_at,
@@ -429,7 +518,49 @@ class DetailsMatchingService:
             expected_details=record.expected_details,
             claims=claims,
             provider_dob_calendar=provider_dob_calendar,
+            matching_profile=active_profile,
         )
+
+        name_match_status: Optional[str] = None
+        name_match_method: Optional[str] = None
+        name_match_reason: Optional[str] = None
+
+        if MATCH_FIELD_FULL_NAME in matches:
+            outcome = matches[MATCH_FIELD_FULL_NAME]
+            if outcome is True:
+                if active_profile == PROFILE_ETHIOPIAN_NAME_V1:
+                    prov_raw = claims.get("name") or claims.get("full_name")
+                    rev = evaluate_review_outcomes(record.expected_details.full_name, prov_raw)
+                    name_match_status = rev.status
+                    name_match_method = rev.method or METHOD_EXACT_NORMALIZED
+                    name_match_reason = rev.reason
+                else:
+                    name_match_status = NAME_MATCH_EXACT
+                    name_match_method = METHOD_EXACT_NORMALIZED
+            elif outcome is False:
+                name_match_status = NAME_MATCH_MISMATCH
+                name_match_method = METHOD_EXACT_NORMALIZED
+                name_match_reason = reasons.get(MATCH_FIELD_FULL_NAME)
+            else:
+                reason = reasons.get(MATCH_FIELD_FULL_NAME)
+                review_reasons = {
+                    "unsupported_characters",
+                    "invisible_control_characters",
+                    "invisible_or_control_characters",
+                    "mixed_script",
+                    "digits_in_name",
+                    "ambiguous_transliteration",
+                    "missing_name_component",
+                    "phonetic_only_agreement",
+                    "initials_in_name",
+                }
+                if active_profile == PROFILE_ETHIOPIAN_NAME_V1 and reason in review_reasons:
+                    name_match_status = NAME_MATCH_REVIEW_REQUIRED
+                    if reason == "phonetic_only_agreement":
+                        name_match_method = METHOD_PHONETIC
+                else:
+                    name_match_status = NAME_MATCH_UNAVAILABLE
+                name_match_reason = reason
 
         res = DetailsMatchResult(
             request_id=clean_request_id,
@@ -437,6 +568,11 @@ class DetailsMatchingService:
             matching_status=overall_status,
             matches=matches,
             comparison_policy_version=DEFAULT_COMPARISON_POLICY_VERSION,
+            matching_profile=active_profile,
+            profile_version=profile_version,
+            name_match_status=name_match_status,
+            name_match_method=name_match_method,
+            name_match_reason=name_match_reason,
             required_fields=list(record.expected_details.required_fields or matches.keys()),
             checked_at=now_iso,
             expires_at=expires_at or record.expires_at,
@@ -447,6 +583,60 @@ class DetailsMatchingService:
 
         # 4. Save minimal outcome
         await self.store.save_match_result(clean_request_id, res, ttl_seconds=900)
+
+        # 5. Capture rich backend-only comparison details (kept backend-only by default)
+        if record and record.expected_details and record.expected_details.full_name:
+            exp_name = record.expected_details.full_name
+            prov_raw = str(claims.get("name") or claims.get("full_name") or "")
+
+            variants: List[str] = []
+            phonetic_codes: List[str] = []
+            for tok in exp_name.split():
+                try:
+                    tr = transliterate_token(tok)
+                    variants.extend(tr.variants)
+                except Exception:
+                    pass
+                try:
+                    pc = get_token_phonetic_codes(tok)
+                    if pc.double_metaphone_primary:
+                        phonetic_codes.append(pc.double_metaphone_primary)
+                    if pc.ethiopian_phonetic_code:
+                        phonetic_codes.append(pc.ethiopian_phonetic_code)
+                except Exception:
+                    pass
+
+            similarity_scores: Dict[str, float] = {}
+            if prov_raw:
+                try:
+                    nsf = compute_name_similarity_features(exp_name, prov_raw)
+                    similarity_scores["overall_similarity_score"] = nsf.overall_similarity_score
+                except Exception:
+                    pass
+
+            cmp_details = BackendComparisonDetails(
+                request_id=clean_request_id,
+                tenant_id=record.tenant_id,
+                principal_id=record.principal_id,
+                application_user_ref=record.application_user_ref,
+                expected_name=exp_name,
+                provider_name=prov_raw,
+                matching_profile=active_profile,
+                variants=list(dict.fromkeys(variants))[:20],
+                phonetic_codes=list(dict.fromkeys(phonetic_codes))[:20],
+                similarity_scores=similarity_scores,
+                name_match_status=name_match_status or overall_status,
+                method=name_match_method,
+                reason=name_match_reason,
+                created_at=now_iso,
+                expires_at=expires_at or record.expires_at,
+                evidence_ref=f"ev_{clean_request_id}",
+            )
+            await self.store.save_backend_comparison(clean_request_id, cmp_details, ttl_seconds=900)
+
+        # 6. Verify privacy invariants: public/agent output contains zero names, variants, phonetic codes, or scores
+        assert_comparison_privacy_invariants(res.model_dump())
+
         return res
 
     async def save_match_result(
@@ -468,3 +658,27 @@ class DetailsMatchingService:
     ) -> Optional[DetailsMatchResult]:
         """Retrieve evaluated minimal details match outcome by request_id."""
         return await self.store.get_match_result(str(request_id).strip())
+
+    async def get_backend_comparison(
+        self,
+        request_id: str,
+        context: Optional[CallerContext] = None,
+        validate_caller: bool = True,
+    ) -> Optional[BackendComparisonDetails]:
+        """Retrieve rich comparison trace kept backend-only, enforcing caller ownership."""
+        clean_request_id = str(request_id).strip()
+        cmp = await self.store.get_backend_comparison(clean_request_id)
+        if cmp is None:
+            return None
+        if validate_caller and context is not None:
+            if context.tenant_id != cmp.tenant_id:
+                raise DetailsCallerMismatchError(clean_request_id)
+            if (
+                context.principal_id != cmp.principal_id
+                and cmp.principal_id not in ("anonymous", "backend_service")
+                and context.principal_id not in ("anonymous", "backend_service")
+                and "admin" not in context.scopes
+                and "*" not in context.scopes
+            ):
+                raise DetailsCallerMismatchError(clean_request_id)
+        return cmp

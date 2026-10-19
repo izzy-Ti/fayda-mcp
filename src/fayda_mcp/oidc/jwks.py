@@ -443,32 +443,51 @@ class JwksCache:
         kid = header.get("kid")
         now = time.time()
 
+        dev_skip = getattr(self.config, "dev_insecure_skip_signature_verification", False)
+        allow_single_fallback = getattr(self.config, "jwks_allow_single_key_fallback", True)
+
         # Check negative cache for known absent kid
         if kid and self.is_negatively_cached(target_issuer, target_uri, kid, now):
+            if dev_skip:
+                logger.warning(
+                    "DEVELOPMENT ONLY: Key '%s' in negative cache; returning single available key or None due to dev_insecure_skip_signature_verification",
+                    kid,
+                )
+                entry = self._cache.get(cache_key)
+                if entry and entry.keys:
+                    return next(iter(entry.keys.values()))
+                return None
             raise TokenValidationError(
                 f"Provider key kid '{kid}' is in negative cache for {target_uri}"
             )
 
         entry = self._cache.get(cache_key)
 
-        def find_key(keys: Dict[str, Any]) -> Optional[Any]:
+        def find_key(keys: Dict[str, Any], allow_single: bool = False) -> Optional[Any]:
             if kid and kid in keys:
                 return keys[kid]
             if not kid and "_default" in keys:
                 return keys["_default"]
             if not kid and len(keys) == 1:
                 return next(iter(keys.values()))
+            if allow_single and allow_single_fallback and len(keys) == 1:
+                logger.info(
+                    "Token kid '%s' not in JWKS (%s); falling back to single available provider key",
+                    kid,
+                    list(keys.keys()),
+                )
+                return next(iter(keys.values()))
             return None
 
         # Check legacy keys if entry is None
         if entry is None and self._keys:
-            matched = find_key(self._keys)
+            matched = find_key(self._keys, allow_single=False)
             if matched:
                 return matched
 
         # Case 1: Entry exists and has matching key
         if entry is not None:
-            cached_key = find_key(entry.keys)
+            cached_key = find_key(entry.keys, allow_single=False)
             if cached_key is not None:
                 # Subcase 1a: Key is fresh (now < refresh_at)
                 if entry.is_fresh(now):
@@ -491,7 +510,7 @@ class JwksCache:
                 try:
                     new_keys = await self.fetch_jwks(client, target_issuer, target_uri)
                     entry = self._cache.get(cache_key)
-                    resolved = find_key(entry.keys if entry else new_keys)
+                    resolved = find_key(entry.keys if entry else new_keys, allow_single=True)
                     if resolved is not None:
                         return resolved
                     # Key was removed in refreshed authoritative set!
@@ -531,7 +550,7 @@ class JwksCache:
                     f"Failed to refresh JWKS for unknown kid '{kid}' at {target_uri}: {exc}"
                 ) from exc
             entry = self._cache.get(cache_key)
-            resolved_key = find_key(entry.keys if entry else new_keys)
+            resolved_key = find_key(entry.keys if entry else new_keys, allow_single=True)
             if resolved_key is not None:
                 if kid:
                     self._negative_cache.pop((target_issuer, target_uri, kid), None)
@@ -545,6 +564,15 @@ class JwksCache:
         # Check cooldown to prevent unknown-kid floods from creating unbounded network calls
         last_unknown_refresh = self._last_unknown_kid_refresh.get(cache_key, 0.0)
         if (now - last_unknown_refresh) < self.unknown_kid_cooldown_seconds:
+            if dev_skip:
+                logger.warning(
+                    "DEVELOPMENT ONLY: In cooldown for unknown kid '%s'; returning single available key or None due to dev_insecure_skip_signature_verification",
+                    kid,
+                )
+                entry = self._cache.get(cache_key)
+                if entry and entry.keys:
+                    return next(iter(entry.keys.values()))
+                return None
             if kid:
                 self.record_negative_cache(target_issuer, target_uri, kid, now)
             raise TokenValidationError(
@@ -563,15 +591,25 @@ class JwksCache:
             ) from exc
 
         entry = self._cache.get(cache_key)
-        resolved_key = find_key(entry.keys if entry else new_keys)
+        resolved_key = find_key(entry.keys if entry else new_keys, allow_single=True)
         if resolved_key is not None:
             if kid:
                 self._negative_cache.pop((target_issuer, target_uri, kid), None)
             return resolved_key
 
-        # Key remains absent after refresh -> negative cache and reject
+        # Key remains absent after refresh -> negative cache and reject (or dev bypass if configured)
         if kid:
             self.record_negative_cache(target_issuer, target_uri, kid, now)
+        if dev_skip:
+            logger.warning(
+                "DEVELOPMENT ONLY: Key with kid '%s' not found in JWKS at %s; returning single available key or None due to dev_insecure_skip_signature_verification",
+                kid,
+                target_uri,
+            )
+            entry = self._cache.get(cache_key)
+            if entry and entry.keys:
+                return next(iter(entry.keys.values()))
+            return None
         raise TokenValidationError(
             f"Provider key kid '{kid}' not found in trusted JWKS at {target_uri}"
         )

@@ -170,6 +170,7 @@ This runs the entire end-to-end lifecycle (starts verification -> builds authori
 
 ## Documentation
 
+- [Ethiopian Name Matching Specification (ethiopian_name_v1)](docs/name_matching.md)
 - [Citizen Details Matching Specification (details-v1)](docs/details_matching.md)
 - [Production, Compatibility & Operations Guide](docs/production_guide.md)
 - [QR Credential Profile Specification](docs/qr_profile.md)

@@ -141,6 +141,13 @@ from fayda_mcp.matching.privacy import (
     assert_ttl_compliance,
     sanitize_matching_result,
 )
+from fayda_mcp.matching.fixtures import (
+    FIXTURES_SPEC_VERSION,
+    RepresentativeFixtureDataset,
+    RepresentativeNamePair,
+    get_representative_pairs,
+    load_representative_fixtures,
+)
 from fayda_mcp.matching.normalization import (
     REASON_DOB_MISMATCH,
     REASON_INVALID_DATE_FORMAT,
@@ -406,4 +413,9 @@ __all__ = [
     "assert_ttl_compliance",
     "assert_comparison_privacy_invariants",
     "sanitize_matching_result",
+    "FIXTURES_SPEC_VERSION",
+    "RepresentativeNamePair",
+    "RepresentativeFixtureDataset",
+    "load_representative_fixtures",
+    "get_representative_pairs",
 ]
